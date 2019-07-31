@@ -1,0 +1,22 @@
+[package]
+name = "mqttest"
+version = "0.1.0"
+authors = ["Vincent de Phily <vincent.dephily@mobile-devices.fr>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "0.4.12"
+futures = "0.1.28"
+log = "0.4.7"
+mqttrs = {version="0.1.1", path="/home/work/c/mqttrs"}
+tokio = "0.1.22"
+
+#[[bin]]
+#required-features = ["cli"]
+structopt = "0.2.18"
+env_logger = "0.6.2"
+#axiom = "0.0.4"
+#actox = "0.1.5"
+
