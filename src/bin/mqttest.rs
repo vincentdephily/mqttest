@@ -64,11 +64,11 @@ fn main() {
              .default_format_timestamp_nanos(true)
              .parse_filters(&opt.log)
              .init();
-    match start(opt.ports[0]..opt.ports[opt.ports.len() - 1], opt.ack_timeout) {
+    match start(opt.ports[0]..=opt.ports[opt.ports.len() - 1], opt.ack_timeout) {
         Ok((_port, server)) => {
             tokio::run(server);
             info!("done");
         },
-        Err(e) => error!("Couldn't initialize server: {:?}", e),
+        Err(e) => error!("Couldn't initialize server: {}", e),
     }
 }
