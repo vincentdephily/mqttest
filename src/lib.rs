@@ -2,7 +2,7 @@ use crate::{client::*, pubsub::*};
 use futures::{stream::Stream, Future};
 use log::*;
 use std::{io::{Error, ErrorKind},
-          fmt::Debug,
+          ops::RangeInclusive,
           sync::{Arc, RwLock},
           time::Duration};
 use tokio::net::TcpListener;
@@ -11,28 +11,44 @@ mod client;
 mod mqtt;
 mod pubsub;
 
-fn listen(ports: impl IntoIterator<Item = u16> + Debug) -> Result<(u16, TcpListener), Error> {
-    let s = format!("Listen failed on 127.0.0.1::{:?} (raise log level for more info)", ports);
-    for p in ports.into_iter() {
+pub struct Conf {
+    ports: RangeInclusive<u16>,
+    ack_timeout: Duration,
+}
+impl Conf {
+    pub fn new() -> Self {
+        Conf { ports: 1883..=2000, ack_timeout: Duration::from_secs(1) }
+    }
+    pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
+        self.ports = ports;
+        self
+    }
+    pub fn ack_timeout(mut self, ms: u64) -> Self {
+        self.ack_timeout = Duration::from_millis(ms);
+        self
+    }
+}
+
+fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
+    for p in ports.clone().into_iter() {
         match TcpListener::bind(&format!("127.0.0.1:{}", p).parse().unwrap()) {
             Ok(l) => return Ok((p, l)),
             Err(e) => trace!("Listen on 127.0.0.1:{}: {}", p, e),
         }
     }
+    let s = format!("Listen failed on 127.0.0.1::{:?} (raise log level for details)", ports);
     Err(Error::new(ErrorKind::Other, s))
 }
 
-pub fn start(ports: impl IntoIterator<Item = u16> + Debug,
-             ack_timeout: Duration)
-             -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
-    let (port, listener) = listen(ports)?;
+pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
+    let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));
     let mut id = 0;
     let f = listener.incoming()
                     .map_err(|e| error!("Failed to accept socket: {:?}", e))
                     .for_each(move |socket| {
-                        tokio::spawn(Client::init(id, socket, subs.clone(), ack_timeout));
+                        tokio::spawn(Client::init(id, socket, subs.clone(), &conf));
                         id += 1;
                         Ok(())
                     });

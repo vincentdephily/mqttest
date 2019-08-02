@@ -1,4 +1,4 @@
-use crate::{mqtt::*, pubsub::*};
+use crate::{Conf, mqtt::*, pubsub::*};
 use futures::{sink::Wait,
               stream::Stream,
               sync::{mpsc::{unbounded, UnboundedSender},
@@ -48,7 +48,7 @@ impl Client {
     pub fn init(id: u64,
                 socket: TcpStream,
                 subs: Arc<RwLock<Subs>>,
-                ack_timeout: Duration)
+                conf: &Conf)
                 -> impl Future<Item = (), Error = ()> {
         info!("C{}: Connection from {:?}", id, socket);
         let (read, write) = socket.split();
@@ -60,7 +60,7 @@ impl Client {
                                   conn: false,
                                   fw,
                                   pend_acks: HashMap::new(),
-                                  ack_timeout,
+                                  ack_timeout: conf.ack_timeout,
                                   subs };
 
         let msg_fut = rx.for_each(move |msg| {

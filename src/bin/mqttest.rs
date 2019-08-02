@@ -1,7 +1,6 @@
 use env_logger::builder;
 use log::*;
-use mqttest::start;
-use std::time::Duration;
+use mqttest::{start, Conf};
 use structopt::{clap::AppSettings::*, StructOpt};
 
 
@@ -25,11 +24,8 @@ struct Opt {
                 default_value = "1883-2000")]
     ports: Vec<u16>,
     /// How long to wait for QoS1/2 acks.
-    #[structopt(long = "ack_timeout",
-                value_name = "ms",
-                default_value = "1000",
-                parse(try_from_str = "from_ms"))]
-    ack_timeout: Duration,
+    #[structopt(long = "ack_timeout", value_name = "ms", default_value = "1000")]
+    ack_timeout: u64,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -50,10 +46,6 @@ struct Opt {
     //    ackduplicate: Vec<usize>,
 }
 
-fn from_ms(d: &str) -> Result<Duration, std::num::ParseIntError> {
-    Ok(Duration::from_millis(d.parse()?))
-}
-
 fn main() {
     let opt = Opt::from_args();
     builder().filter_level(match opt.verbose {
@@ -64,7 +56,9 @@ fn main() {
              .default_format_timestamp_nanos(true)
              .parse_filters(&opt.log)
              .init();
-    match start(opt.ports[0]..=opt.ports[opt.ports.len() - 1], opt.ack_timeout) {
+    match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
+                           .ack_timeout(opt.ack_timeout))
+    {
         Ok((_port, server)) => {
             tokio::run(server);
             info!("done");
