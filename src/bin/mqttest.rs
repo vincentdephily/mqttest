@@ -46,6 +46,7 @@ struct Opt {
     //    ackduplicate: Vec<usize>,
 }
 
+// FIXME: Define exit codes
 fn main() {
     let opt = Opt::from_args();
     builder().filter_level(match opt.verbose {

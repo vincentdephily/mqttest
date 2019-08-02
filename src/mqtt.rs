@@ -5,28 +5,8 @@ pub use mqttrs::*;
 use std::io::Error;
 use tokio::codec::{Decoder, Encoder};
 
-//pub type MqttId = u16;
-///// equivalent to `mqtt::qos::QualityOfService` but ignores level 0 and lets us derive serde traits.
-//#[derive(Debug, Clone, Copy, PartialEq)]
-//pub enum MqttQoS {
-//    /// Non-acked, at-most-once delivery.
-//    Level0,
-//    /// Single-acked, at-least-once delivery.
-//    Level1(MqttId),
-//}
-//impl From<MqttQoS> for QoSWithPacketIdentifier {
-//    fn from(q: MqttQoS) -> Self {
-//        match q {
-//            MqttQoS::Level0 => QoSWithPacketIdentifier::new(QualityOfService::Level0, 0),
-//            MqttQoS::Level1(i) => QoSWithPacketIdentifier::new(QualityOfService::Level1, i),
-//        }
-//    }
-//}
-
 /// Decode network bytes into an MQTT packet.
 /// The tokio FramedRead API calls this to determine the bounds of a full packet.
-// TODO: update format to json/protobuf/md30
-// FIXME: Emptying and refilling `src` like this is inefficient. Find a clean way to decode the `&mut BytesMut` directly.
 pub struct Codec(pub u64);
 impl Decoder for Codec {
     type Item = Packet;

@@ -1,4 +1,4 @@
-use crate::{Conf, mqtt::*, pubsub::*};
+use crate::{mqtt::*, pubsub::*, Conf};
 use futures::{sink::Wait,
               stream::Stream,
               sync::{mpsc::{unbounded, UnboundedSender},
@@ -17,34 +17,43 @@ use tokio::{codec::{FramedRead, FramedWrite},
 /// Connection id for debug and indexing purposes.
 pub type ConnId = u64;
 
+/// Allows sending a `Msg` to a `Client`.
 #[derive(Clone)]
 pub struct Addr(UnboundedSender<Msg>);
 impl Addr {
     fn send(&self, pkt: Packet) {
-        //FIXME: how to behave when channel is closed (mqtt client is disconnected)
         if let Err(e) = self.0.unbounded_send(Msg::PktOut(pkt)) {
-            error!("Trying to send to disconnected chan: {:?}", e);
+            panic!("Trying to send to disconnected Addr {:?}", e);
         }
     }
 }
 
-pub enum Msg {
+enum Msg {
     PktIn(Packet),
     PktOut(Packet),
 }
 
+/// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
+/// and handles them, mutating the struct.
 pub struct Client {
     pub id: ConnId,
     pub addr: Addr,
+    /// Is the MQTT connection fully established ?
+    // FIXME: there's more than two states.
     conn: bool,
-    fw: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
+    /// Write `Packet`s there, they'll get encoded and sent over the TcpStream.
+    //  FIXME switch to async writes,
+    writer: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
     /// Acks currently pending, and what to do when it times out.
     pend_acks: HashMap<PacketIdentifier, oneshot::Sender<()>>,
+    /// Pending acks will timeout after that duration.
     ack_timeout: Duration,
+    /// Shared list of all the client subscriptions.
     subs: Arc<RwLock<Subs>>,
 }
 impl Client {
-    /// Initializes a new `Client` and returns a `Future` that'll handle the whole connection.
+    /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
+    /// connection. It's the caller's responsibility to execute that future.
     pub fn init(id: u64,
                 socket: TcpStream,
                 subs: Arc<RwLock<Subs>>,
@@ -52,36 +61,38 @@ impl Client {
                 -> impl Future<Item = (), Error = ()> {
         info!("C{}: Connection from {:?}", id, socket);
         let (read, write) = socket.split();
-        let fr = FramedRead::new(read, Codec(id));
-        let fw = FramedWrite::new(write, Codec(id)).wait(); //FIXME switch to async writes
         let (sx, rx) = unbounded::<Msg>();
         let mut client = Client { id,
                                   addr: Addr(sx.clone()),
                                   conn: false,
-                                  fw,
+                                  writer: FramedWrite::new(write, Codec(id)).wait(),
                                   pend_acks: HashMap::new(),
                                   ack_timeout: conf.ack_timeout,
                                   subs };
-
-        let msg_fut = rx.for_each(move |msg| {
-                            match msg {
-                                Msg::PktIn(p) => client.handle_pkt_in(p),
-                                Msg::PktOut(p) => client.handle_pkt_out(p),
-                            }.map_err(move |e| {
-                                 error!("C{}: {}", id, e);
-                             })
-                        });
-        let pkt_fut = fr.map_err(move |e| {
-                            error!("C{}: {:?}", id, e);
-                        })
-                        .for_each(move |pktin| {
-                            sx.unbounded_send(Msg::PktIn(pktin))
-                              .expect("Client sending to itself, channel should exist");
-                            Ok(())
-                        });
-        pkt_fut.join(msg_fut).map(move |_| {
-                                 info!("C{}: Connection closed", id);
-                             })
+        // This future handles all `Msg`s comming to the client.
+        let msg = rx.for_each(move |msg| {
+                        match msg {
+                            Msg::PktIn(p) => client.handle_pkt_in(p),
+                            Msg::PktOut(p) => client.handle_pkt_out(p),
+                        }.map_err(move |e| {
+                             error!("C{}: msg: {}", id, e);
+                         })
+                    });
+        // This future decodes MQTT packets and forwards them as `Msg`s.
+        let fr = FramedRead::new(read, Codec(id));
+        let pkt = fr.map_err(move |e| {
+                        error!("C{}: pkt: {}", id, e);
+                    })
+                    .for_each(move |pktin| {
+                        sx.unbounded_send(Msg::PktIn(pktin))
+                          .expect("Client sending to itself, channel should exist");
+                        Ok(())
+                    });
+        // Resolve this future (aka drop this `Client`) when either the TcpStream or the
+        // Receiver<Msg> is closed.
+        pkt.join(msg).map(move |_| {
+                         info!("C{}: Connection closed", id);
+                     })
     }
 
     /// Receive packets from client.
@@ -94,9 +105,10 @@ impl Client {
                 self.conn = true;
                 self.addr.send(connack(false, ConnectReturnCode::Accepted));
             },
-            // FIXME: close connection
+            // FIXME: Use our own error type, and let this one log as INFO rather than ERROR
             (Packet::Disconnect, true) => {
                 self.conn = false;
+                return Err(Error::new(ErrorKind::ConnectionReset, "Received Disconnect"));
             },
             // Ping request
             // FIXME: accept ping when not connected ?
@@ -117,13 +129,13 @@ impl Client {
             (Packet::Publish(p), true) => {
                 assert_eq!(QoS::AtLeastOnce, p.qos, "Only AtLeastOnce currently supported");
                 if let Some(subs) = self.subs.read().expect("read subs").get(&p.topic_name) {
-                    for (qos, addr) in subs.values() {
-                        addr.send(publish(false,
-                                          *qos,
-                                          false,
-                                          p.topic_name.clone(),
-                                          Some(PacketIdentifier(64)),
-                                          p.payload.clone()));
+                    for s in subs.values() {
+                        s.addr.send(publish(false,
+                                            s.qos,
+                                            false,
+                                            p.topic_name.clone(),
+                                            Some(PacketIdentifier(64)),
+                                            p.payload.clone()));
                     }
                 }
                 self.addr.send(puback(p.pid.unwrap()));
@@ -174,8 +186,15 @@ impl Client {
             },
             _ => (),
         }
-        self.fw.send(pkt)?;
-        self.fw.flush()
+        self.writer.send(pkt)?;
+        self.writer.flush()
+    }
+}
+impl Drop for Client {
+    /// If a Client dies, we need to drop all its subscriptions.
+    fn drop(&mut self) {
+        let mut subs = self.subs.write().expect("write subs");
+        subs.del_all(&self);
     }
 }
 

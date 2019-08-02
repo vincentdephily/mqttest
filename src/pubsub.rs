@@ -2,23 +2,34 @@ use crate::{client::*, mqtt::*};
 use log::*;
 use std::collections::HashMap;
 
-pub struct Subs(HashMap<String, HashMap<ConnId, (QoS, Addr)>>);
+pub struct Subs(HashMap<String, HashMap<ConnId, Sub>>);
 impl Subs {
     pub fn new() -> Self {
         Subs(HashMap::new())
     }
-    pub fn get(&self, s: &str) -> Option<&HashMap<ConnId, (QoS, Addr)>> {
+    pub fn get(&self, s: &str) -> Option<&HashMap<ConnId, Sub>> {
         self.0.get(s)
     }
     /// Register subscription. Returns `true` if it is new.
     pub fn add(&mut self, topic: &String, qos: QoS, client: &Client) -> bool {
-        debug!("Connection {} subscribes to {:?} {:?}", client.id, topic, qos);
+        debug!("C{}: subscribe to {:?} {:?}", client.id, topic, qos);
         self.0
             .entry(topic.clone())
             .or_default()
-            .insert(client.id, (qos, client.addr.clone()))
+            .insert(client.id, Sub { qos, addr: client.addr.clone() })
             .is_none()
     }
     //fn del(&mut self, topic: &String, client: &Client) {}
-    //fn del_all(&mut self, client: &Client) {}
+    pub fn del_all(&mut self, client: &Client) {
+        debug!("C{}: unsubscribe all", client.id);
+        self.0.values_mut().for_each(|h| {
+                               h.remove(&client.id);
+                           });
+        self.0.retain(|_s, h| !h.is_empty());
+    }
+}
+
+pub struct Sub {
+    pub qos: QoS,
+    pub addr: Addr,
 }
