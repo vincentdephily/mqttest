@@ -37,6 +37,7 @@ enum Msg {
 /// and handles them, mutating the struct.
 pub struct Client {
     pub id: ConnId,
+    pub name: String,
     pub addr: Addr,
     /// Is the MQTT connection fully established ?
     // FIXME: there's more than two states.
@@ -63,6 +64,7 @@ impl Client {
         let (read, write) = socket.split();
         let (sx, rx) = unbounded::<Msg>();
         let mut client = Client { id,
+                                  name: String::from(""),
                                   addr: Addr(sx.clone()),
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
@@ -101,8 +103,10 @@ impl Client {
         match (pkt, self.conn) {
             // Connection
             // FIXME: handle session restore and different return codes
-            (Packet::Connect(_), false) => {
+            // FIXME: optionally disallow multiple connections with same client.name
+            (Packet::Connect(c), false) => {
                 self.conn = true;
+                self.name = c.client_id;
                 self.addr.send(connack(false, ConnectReturnCode::Accepted));
             },
             // FIXME: Use our own error type, and let this one log as INFO rather than ERROR
