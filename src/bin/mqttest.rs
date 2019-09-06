@@ -26,6 +26,13 @@ struct Opt {
     /// How long to wait for QoS1/2 acks.
     #[structopt(long = "ack_timeout", value_name = "ms", default_value = "1000")]
     ack_timeout: u64,
+    /// Dump packets to file.
+    ///
+    /// The filename can contain a `{c}` placeholder that will be replaced by the connection
+    /// number. The dump format is json and corresponds to `pub struct mqttest::DumpMeta` in the
+    /// rust lib.
+    #[structopt(long = "dump", value_name = "DUMP")]
+    dumps: Vec<String>,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -58,6 +65,7 @@ fn main() {
              .parse_filters(&opt.log)
              .init();
     match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
+                           .dumpfiles(opt.dumps)
                            .ack_timeout(opt.ack_timeout))
     {
         Ok((_port, server)) => {

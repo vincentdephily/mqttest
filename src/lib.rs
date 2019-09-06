@@ -1,4 +1,4 @@
-use crate::{client::*, pubsub::*};
+use crate::{client::*, dump::*, pubsub::*};
 use futures::{stream::Stream, Future};
 use log::*;
 use std::{io::{Error, ErrorKind},
@@ -8,19 +8,27 @@ use std::{io::{Error, ErrorKind},
 use tokio::net::TcpListener;
 
 mod client;
+mod dump;
 mod mqtt;
 mod pubsub;
+
+pub use dump::{DumpMeta, DumpMqtt};
 
 pub struct Conf {
     ports: RangeInclusive<u16>,
     ack_timeout: Duration,
+    dumps: Vec<String>,
 }
 impl Conf {
     pub fn new() -> Self {
-        Conf { ports: 1883..=2000, ack_timeout: Duration::from_secs(1) }
+        Conf { ports: 1883..=2000, dumps: vec![], ack_timeout: Duration::from_secs(1) }
     }
     pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
         self.ports = ports;
+        self
+    }
+    pub fn dumpfiles(mut self, v: Vec<String>) -> Self {
+        self.dumps.extend(v);
         self
     }
     pub fn ack_timeout(mut self, ms: u64) -> Self {
@@ -44,11 +52,12 @@ pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Er
     let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));
+    let dumps = Dump::new();
     let mut id = 0;
     let f = listener.incoming()
                     .map_err(|e| error!("Failed to accept socket: {:?}", e))
                     .for_each(move |socket| {
-                        tokio::spawn(Client::init(id, socket, subs.clone(), &conf));
+                        tokio::spawn(Client::init(id, socket, subs.clone(), dumps.clone(), &conf));
                         id += 1;
                         Ok(())
                     });

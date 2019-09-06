@@ -11,6 +11,9 @@ bytes = "0.4.12"
 futures = "0.1.28"
 log = "0.4.7"
 mqttrs = {version="0.1.1", path="/home/work/c/mqttrs"}
+serde =  { version = "1.0.99", features = ["derive"] }
+serde_json = "1.0.40"
+time = "0.1.42"
 tokio = "0.1.22"
 
 #[[bin]]

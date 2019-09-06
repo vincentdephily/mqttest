@@ -1,4 +1,4 @@
-use crate::{mqtt::*, pubsub::*, Conf};
+use crate::{dump::*, mqtt::*, pubsub::*, Conf};
 use futures::{sink::Wait,
               stream::Stream,
               sync::{mpsc::{unbounded, UnboundedSender},
@@ -45,6 +45,8 @@ pub struct Client {
     /// Write `Packet`s there, they'll get encoded and sent over the TcpStream.
     //  FIXME switch to async writes,
     writer: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
+    /// Dump targets.
+    dumps: Dump,
     /// Acks currently pending, and what to do when it times out.
     pend_acks: HashMap<PacketIdentifier, oneshot::Sender<()>>,
     /// Pending acks will timeout after that duration.
@@ -58,6 +60,7 @@ impl Client {
     pub fn init(id: u64,
                 socket: TcpStream,
                 subs: Arc<RwLock<Subs>>,
+                dumps: Dump,
                 conf: &Conf)
                 -> impl Future<Item = (), Error = ()> {
         info!("C{}: Connection from {:?}", id, socket);
@@ -68,9 +71,18 @@ impl Client {
                                   addr: Addr(sx.clone()),
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
+                                  dumps,
                                   pend_acks: HashMap::new(),
                                   ack_timeout: conf.ack_timeout,
                                   subs };
+        // Initialize json dump target.
+        for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
+            let s = s.replace("{c}", &format!("{}", id));
+            match client.dumps.register(&s) {
+                Ok(_) => debug!("C{}: Dump to {}", id, s),
+                Err(e) => error!("C{}: Cannot dump to {}: {}", id, s, e),
+            }
+        }
         // This future handles all `Msg`s comming to the client.
         let msg = rx.for_each(move |msg| {
                         match msg {
@@ -100,6 +112,7 @@ impl Client {
     /// Receive packets from client.
     fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
+        self.dumps.dump(self.id, &self.name, "R", &pkt);
         match (pkt, self.conn) {
             // Connection
             // FIXME: handle session restore and different return codes
@@ -169,6 +182,7 @@ impl Client {
     /// Send packets to client.
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
+        self.dumps.dump(self.id, &self.name, "W", &pkt);
         match &pkt {
             Packet::Publish(p) if p.pid.is_some() => {
                 // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
