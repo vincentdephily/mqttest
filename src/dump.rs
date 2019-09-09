@@ -36,13 +36,33 @@ pub struct DumpMeta<'a> {
 //    time::strptime(&s, "%FT%T.").map_err(serde::de::Error::custom)
 //}
 
+/// Parsed QoS+PacketIdentifier. Note that the identifier MUST be absent for AtMostOnce and present
+/// for AtLeastOnce/ExactlyOnce.
+// FIXME: Instead of panicing, return a result and let `DumpMqtt::from(&Packet)` fail cleanly just
+// for this client and/or dump a `DumpMqtt::Invalid` variant.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum DumpQoS {
+    AtMostOnce,
+    AtLeastOnce(u16),
+    ExactlyOnce(u16),
+}
+impl DumpQoS {
+    fn from(q: QoS, p: Option<PacketIdentifier>) -> Self {
+        match (q, p) {
+            (QoS::AtMostOnce, None) => Self::AtMostOnce,
+            (QoS::AtLeastOnce, Some(i)) => Self::AtLeastOnce(i.0),
+            (QoS::ExactlyOnce, Some(i)) => Self::ExactlyOnce(i.0),
+            _ => panic!("Can't have qos {:?} with pid {:?}", q, p),
+        }
+    }
+}
+
 /// Parsed MQTT publish packet.
 // FIXME: This currently relies on a forked `mqttrs` with serde derives.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpPublish {
     pub dup: bool,
-    pub qos: QoS,
-    pub pid: Option<PacketIdentifier>,
+    pub qos: DumpQoS,
     pub topic: String,
     /// The payload as a string, if it is valid utf-8
     pub utf8: Option<String>,
@@ -77,8 +97,7 @@ impl From<&Packet> for DumpMqtt {
             Packet::Connack(_) => Self::Connack,
             Packet::Publish(p) => {
                 Self::Publish(DumpPublish { dup: p.dup,
-                                            qos: p.qos,
-                                            pid: p.pid,
+                                            qos: DumpQoS::from(p.qos, p.pid),
                                             topic: p.topic_name.clone(),
                                             utf8: String::from_utf8(p.payload.clone()).ok(),
                                             bytes: p.payload.clone() })

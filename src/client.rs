@@ -4,7 +4,7 @@ use futures::{sink::Wait,
               sync::{mpsc::{unbounded, UnboundedSender},
                      oneshot}};
 use log::*;
-use std::{collections::HashMap,
+use std::{collections::BTreeMap,
           io::{Error, ErrorKind},
           sync::{Arc, RwLock},
           time::{Duration, Instant}};
@@ -48,7 +48,7 @@ pub struct Client {
     /// Dump targets.
     dumps: Dump,
     /// Acks currently pending, and what to do when it times out.
-    pend_acks: HashMap<PacketIdentifier, oneshot::Sender<()>>,
+    pend_acks: BTreeMap<PacketIdentifier, oneshot::Sender<()>>,
     /// Pending acks will timeout after that duration.
     ack_timeout: Duration,
     /// Shared list of all the client subscriptions.
@@ -72,7 +72,7 @@ impl Client {
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
                                   dumps,
-                                  pend_acks: HashMap::new(),
+                                  pend_acks: BTreeMap::new(),
                                   ack_timeout: conf.ack_timeout,
                                   subs };
         // Initialize json dump target.
