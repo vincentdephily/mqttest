@@ -6,8 +6,7 @@ use structopt::{clap::AppSettings::*, StructOpt};
 
 #[derive(StructOpt)]
 #[structopt(name = "mqttest",
-            author = "",
-            raw(global_settings = "&[ColoredHelp, DeriveDisplayOrder, InferSubcommands, DisableHelpSubcommand, VersionlessSubcommands]"))]
+            global_settings = &[ColoredHelp, DeriveDisplayOrder, InferSubcommands, DisableHelpSubcommand, VersionlessSubcommands])]
 struct Opt {
     /// Increase log level (info -> debug -> trace). Shorthand for "--log debug" or "--log trace".
     #[structopt(short = "v", parse(from_occurrences))]
