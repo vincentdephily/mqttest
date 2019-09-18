@@ -14,15 +14,15 @@ use tokio::io::Write;
 pub struct DumpMeta<'a> {
     //#[serde(serialize_with = "ser_time", deserialize_with = "de_time")]
     /// Timestamp formated as a string, fixed-size, iso-8601, UTC
-    pub t: String,
+    pub ts: String,
     /// Connection id/counter
-    pub c: ConnId,
+    pub con: ConnId,
     /// MQTT Client id
-    pub i: &'a str,
-    /// Packet direction: (R)ead from client or (W)ritten to client.
-    pub d: &'a str,
+    pub id: &'a str,
+    /// Packet origin: from (C)lient or from (S)erver.
+    pub from: &'a str,
     /// Parsed MQTT packet
-    pub p: DumpMqtt,
+    pub pkt: DumpMqtt,
 }
 //fn ser_time<S>(tm: &Tm, s: S) -> Result<S::Ok, S::Error>
 //    where S: Serializer
@@ -165,11 +165,11 @@ impl Dump {
 
     /// Serialize packet/metadata as json and asynchronously write it to the files.
     pub fn dump(&self, conid: ConnId, clientid: &str, dir: &'static str, pkt: &Packet) {
-        let e = to_string(&DumpMeta { t: Dump::now_str(),
-                                      c: conid,
-                                      i: clientid,
-                                      d: dir,
-                                      p: DumpMqtt::from(pkt) }).unwrap();
+        let e = to_string(&DumpMeta { ts: Dump::now_str(),
+                                      con: conid,
+                                      id: clientid,
+                                      from: dir,
+                                      pkt: DumpMqtt::from(pkt) }).unwrap();
         for c in self.chans.iter() {
             c.unbounded_send(e.clone()).unwrap();
         }

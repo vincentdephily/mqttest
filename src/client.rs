@@ -112,7 +112,7 @@ impl Client {
     /// Receive packets from client.
     fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
-        self.dumps.dump(self.id, &self.name, "R", &pkt);
+        self.dumps.dump(self.id, &self.name, "C", &pkt);
         match (pkt, self.conn) {
             // Connection
             // FIXME: handle session restore and different return codes
@@ -182,7 +182,7 @@ impl Client {
     /// Send packets to client.
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
-        self.dumps.dump(self.id, &self.name, "W", &pkt);
+        self.dumps.dump(self.id, &self.name, "S", &pkt);
         match &pkt {
             Packet::Publish(p) if p.pid.is_some() => {
                 // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
