@@ -144,32 +144,41 @@ impl Client {
             // Publish
             // FIXME: support AtMostOnce see https://github.com/00imvj00/mqttrs/issues/6
             (Packet::Publish(p), true) => {
-                assert_eq!(QoS::AtLeastOnce, p.qos, "Only AtLeastOnce currently supported");
                 if let Some(subs) = self.subs.read().expect("read subs").get(&p.topic_name) {
                     for s in subs.values() {
                         s.addr.send(publish(false,
                                             s.qos,
                                             false,
                                             p.topic_name.clone(),
-                                            Some(PacketIdentifier(64)),
+                                            // FIXME: use proper pid value for that client
+                                            match s.qos {
+                                                QoS::AtMostOnce => None,
+                                                QoS::AtLeastOnce => Some(PacketIdentifier(64)),
+                                                QoS::ExactlyOnce => {
+                                                    panic!("ExactlyOnce not supported yet")
+                                                },
+                                            },
                                             p.payload.clone()));
                     }
                 }
-                self.addr.send(puback(p.pid.unwrap()));
+                match p.qos {
+                    QoS::AtMostOnce => (),
+                    QoS::AtLeastOnce => self.addr.send(puback(p.pid.unwrap())),
+                    QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
+                }
             },
             // Subscription request
             // FIXME: support AtMostOnce see https://github.com/00imvj00/mqttrs/issues/6
             (Packet::Subscribe(Subscribe { pid, topics }), true) => {
                 let mut subs = self.subs.write().expect("write subs");
-                let ret_codes = topics.iter()
-                                      .map(|SubscribeTopic { topic_path, qos }| {
-                                          assert_eq!(QoS::AtLeastOnce,
-                                                     *qos,
-                                                     "Only AtLeastOnce currently supported");
-                                          subs.add(topic_path, *qos, self);
-                                          SubscribeReturnCodes::Success(*qos)
-                                      })
-                                      .collect();
+                let ret_codes =
+                    topics.iter()
+                          .map(|SubscribeTopic { topic_path, qos }| {
+                              assert_ne!(QoS::ExactlyOnce, *qos, "ExactlyOnce not supported yet");
+                              subs.add(topic_path, *qos, self);
+                              SubscribeReturnCodes::Success(*qos)
+                          })
+                          .collect();
                 self.addr.send(suback(pid, ret_codes));
             },
             (other, _) => {
