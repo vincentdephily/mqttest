@@ -151,6 +151,26 @@ pub enum DumpMqtt {
     PingResp,
     Disconnect,
 }
+impl DumpMqtt {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Connect(_) => "con",
+            Self::Connack(_) => "conack",
+            Self::Publish(_) => "pub",
+            Self::Puback(_) => "puback",
+            Self::Pubrec(_) => "pubrec",
+            Self::Pubrel(_) => "pubrel",
+            Self::PubComp(_) => "pubcomp",
+            Self::Subscribe(_) => "sub",
+            Self::SubAck(_) => "suback",
+            Self::UnSubscribe(_) => "unsub",
+            Self::UnSubAck(_) => "unsuback",
+            Self::PingReq => "pingreq",
+            Self::PingResp => "pingresp",
+            Self::Disconnect => "disco",
+        }
+    }
+}
 impl From<&Packet> for DumpMqtt {
     fn from(p: &Packet) -> Self {
         match p {
