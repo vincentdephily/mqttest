@@ -35,7 +35,7 @@ enum Msg {
 
 /// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
 /// and handles them, mutating the struct.
-pub struct Client {
+pub(crate) struct Client {
     pub id: ConnId,
     pub name: String,
     pub addr: Addr,

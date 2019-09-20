@@ -2,7 +2,7 @@ use crate::{client::*, mqtt::*};
 use log::*;
 use std::collections::HashMap;
 
-pub struct Subs(HashMap<String, HashMap<ConnId, Sub>>);
+pub(crate) struct Subs(HashMap<String, HashMap<ConnId, Sub>>);
 impl Subs {
     pub fn new() -> Self {
         Subs(HashMap::new())

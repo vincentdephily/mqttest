@@ -12,7 +12,7 @@ mod dump;
 mod mqtt;
 mod pubsub;
 
-pub use dump::{DumpMeta, DumpMqtt};
+pub use dump::*;
 
 pub struct Conf {
     ports: RangeInclusive<u16>,

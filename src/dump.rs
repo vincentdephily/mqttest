@@ -233,7 +233,7 @@ impl From<&Packet> for DumpMqtt {
 /// for every client.
 // TODO: support de-registering files.
 #[derive(Clone)]
-pub struct Dump {
+pub(crate) struct Dump {
     reg: Arc<Mutex<HashMap<String, UnboundedSender<String>>>>,
     chans: Vec<UnboundedSender<String>>,
 }
