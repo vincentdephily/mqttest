@@ -1,9 +1,9 @@
-use crate::{client::*, dump::*, pubsub::*};
+use crate::{client::*, dump::*, pubsub::*, session::*};
 use futures::{stream::Stream, Future};
 use log::*;
 use std::{io::{Error, ErrorKind},
           ops::RangeInclusive,
-          sync::{Arc, RwLock},
+          sync::{Arc, Mutex, RwLock},
           time::Duration};
 use tokio::net::TcpListener;
 
@@ -11,6 +11,7 @@ mod client;
 mod dump;
 mod mqtt;
 mod pubsub;
+mod session;
 
 pub use dump::*;
 
@@ -52,12 +53,18 @@ pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Er
     let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));
+    let sess = Arc::new(Mutex::new(Sessions::new()));
     let dumps = Dump::new();
     let mut id = 0;
     let f = listener.incoming()
                     .map_err(|e| error!("Failed to accept socket: {:?}", e))
                     .for_each(move |socket| {
-                        tokio::spawn(Client::init(id, socket, subs.clone(), dumps.clone(), &conf));
+                        tokio::spawn(Client::init(id,
+                                                  socket,
+                                                  subs.clone(),
+                                                  sess.clone(),
+                                                  dumps.clone(),
+                                                  &conf));
                         id += 1;
                         Ok(())
                     });

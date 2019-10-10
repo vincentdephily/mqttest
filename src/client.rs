@@ -1,4 +1,4 @@
-use crate::{dump::*, mqtt::*, pubsub::*, Conf};
+use crate::{dump::*, mqtt::*, pubsub::*, session::*, Conf};
 use futures::{sink::Wait,
               stream::Stream,
               sync::{mpsc::{unbounded, UnboundedSender},
@@ -6,7 +6,7 @@ use futures::{sink::Wait,
 use log::*;
 use std::{collections::BTreeMap,
           io::{Error, ErrorKind},
-          sync::{Arc, RwLock},
+          sync::{Arc, Mutex, RwLock},
           time::{Duration, Instant}};
 use tokio::{codec::{FramedRead, FramedWrite},
             io::WriteHalf,
@@ -19,18 +19,39 @@ pub type ConnId = u64;
 
 /// Allows sending a `Msg` to a `Client`.
 #[derive(Clone)]
-pub struct Addr(UnboundedSender<Msg>);
+pub struct Addr(UnboundedSender<Msg>, pub(crate) ConnId);
 impl Addr {
-    fn send(&self, pkt: Packet) {
-        if let Err(e) = self.0.unbounded_send(Msg::PktOut(pkt)) {
-            panic!("Trying to send to disconnected Addr {:?}", e);
+    pub(crate) fn send(&self, msg: Msg) {
+        if let Err(e) = self.0.unbounded_send(msg) {
+            warn!("Trying to send to disconnected Addr {:?}", e);
         }
     }
 }
+impl PartialEq for Addr {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+impl Eq for Addr {}
+impl std::fmt::Debug for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Addr(_, {})", self.1)
+    }
+}
 
-enum Msg {
+pub(crate) enum Msg {
     PktIn(Packet),
     PktOut(Packet),
+    Replaced(ConnId, oneshot::Sender<SessionData>),
+}
+
+/// Note that we're not deriving Clone. The only place where a new SessionData should be
+/// instanciated is Session::open(). This helps making sure that only one SessionData instance
+/// exists for a given Client.name.
+#[derive(Debug, Default)]
+pub(crate) struct SessionData {
+    /// Number of connections seen by this session. If it is 0, this is a brand new session.
+    cons: usize,
 }
 
 /// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
@@ -53,6 +74,10 @@ pub(crate) struct Client {
     ack_timeout: Duration,
     /// Shared list of all the client subscriptions.
     subs: Arc<RwLock<Subs>>,
+    /// Shared list of all the client sessions.
+    sessions: Arc<Mutex<Sessions>>,
+    /// Client session.
+    session: Option<SessionData>,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -60,6 +85,7 @@ impl Client {
     pub fn init(id: u64,
                 socket: TcpStream,
                 subs: Arc<RwLock<Subs>>,
+                sessions: Arc<Mutex<Sessions>>,
                 dumps: Dump,
                 conf: &Conf)
                 -> impl Future<Item = (), Error = ()> {
@@ -68,13 +94,15 @@ impl Client {
         let (sx, rx) = unbounded::<Msg>();
         let mut client = Client { id,
                                   name: String::from(""),
-                                  addr: Addr(sx.clone()),
+                                  addr: Addr(sx.clone(), id),
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
                                   dumps,
                                   pend_acks: BTreeMap::new(),
                                   ack_timeout: conf.ack_timeout,
-                                  subs };
+                                  subs,
+                                  sessions,
+                                  session: None };
         // Initialize json dump target.
         for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
             let s = s.replace("{c}", &format!("{}", id));
@@ -88,6 +116,7 @@ impl Client {
                         match msg {
                             Msg::PktIn(p) => client.handle_pkt_in(p),
                             Msg::PktOut(p) => client.handle_pkt_out(p),
+                            Msg::Replaced(i, c) => client.handle_replaced(i, c),
                         }.map_err(move |e| {
                              error!("C{}: msg: {}", id, e);
                          })
@@ -116,11 +145,20 @@ impl Client {
         match (pkt, self.conn) {
             // Connection
             // FIXME: handle session restore and different return codes
-            // FIXME: optionally disallow multiple connections with same client.name
             (Packet::Connect(c), false) => {
                 self.conn = true;
                 self.name = c.client_id;
-                self.addr.send(connack(false, ConnectReturnCode::Accepted));
+                let mut sm = self.sessions.lock().expect("lock sessions");
+                let mut sess = sm.open(&self, c.clean_session);
+                let isold = sess.cons > 0;
+                sess.cons += 1;
+                if isold {
+                    debug!("C{}: loaded old session {:?}", self.id, sess);
+                } else {
+                    debug!("C{}: loaded new session", self.id);
+                }
+                self.session = Some(sess);
+                self.addr.send(Msg::PktOut(connack(isold, ConnectReturnCode::Accepted)));
             },
             // FIXME: Use our own error type, and let this one log as INFO rather than ERROR
             (Packet::Disconnect, true) => {
@@ -129,7 +167,7 @@ impl Client {
             },
             // Ping request
             // FIXME: accept ping when not connected ?
-            (Packet::PingReq, true) => self.addr.send(pingresp()),
+            (Packet::PingReq, true) => self.addr.send(Msg::PktOut(pingresp())),
             // Puback: cancel the resend timer if the ack was expected, die otherwise.
             (Packet::Puback(pid), true) => match self.pend_acks.remove(&pid) {
                 Some(handle) => {
@@ -146,24 +184,24 @@ impl Client {
             (Packet::Publish(p), true) => {
                 if let Some(subs) = self.subs.read().expect("read subs").get(&p.topic_name) {
                     for s in subs.values() {
-                        s.addr.send(publish(false,
-                                            s.qos,
-                                            false,
-                                            p.topic_name.clone(),
-                                            // FIXME: use proper pid value for that client
-                                            match s.qos {
-                                                QoS::AtMostOnce => None,
-                                                QoS::AtLeastOnce => Some(PacketIdentifier(64)),
-                                                QoS::ExactlyOnce => {
-                                                    panic!("ExactlyOnce not supported yet")
-                                                },
-                                            },
-                                            p.payload.clone()));
+                        let p =
+                            publish(false,
+                                    s.qos,
+                                    false,
+                                    p.topic_name.clone(),
+                                    // FIXME: use proper pid value for that client
+                                    match s.qos {
+                                        QoS::AtMostOnce => None,
+                                        QoS::AtLeastOnce => Some(PacketIdentifier(64)),
+                                        QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
+                                    },
+                                    p.payload.clone());
+                        s.addr.send(Msg::PktOut(p));
                     }
                 }
                 match p.qos {
                     QoS::AtMostOnce => (),
-                    QoS::AtLeastOnce => self.addr.send(puback(p.pid.unwrap())),
+                    QoS::AtLeastOnce => self.addr.send(Msg::PktOut(puback(p.pid.unwrap()))),
                     QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
                 }
             },
@@ -179,7 +217,7 @@ impl Client {
                               SubscribeReturnCodes::Success(*qos)
                           })
                           .collect();
-                self.addr.send(suback(pid, ret_codes));
+                self.addr.send(Msg::PktOut(suback(pid, ret_codes)));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -204,7 +242,7 @@ impl Client {
                 let addr = self.addr.clone();
                 let handle = delay_cancel(self.ack_timeout, move || {
                     warn!("C{}: ack timeout {:?}, resending", id, pid);
-                    addr.send(p);
+                    addr.send(Msg::PktOut(p));
                 });
                 if let Some(prev) = self.pend_acks.insert(pid, handle) {
                     // Reusing a not-yet-acked pid is a server error, not a client error.
@@ -216,12 +254,29 @@ impl Client {
         self.writer.send(pkt)?;
         self.writer.flush()
     }
+
+    fn handle_replaced(&mut self,
+                       conn: ConnId,
+                       chan: oneshot::Sender<SessionData>)
+                       -> Result<(), Error> {
+        info!("C{}: replaced by connection {}", self.id, conn);
+        chan.send(self.session.take().unwrap()).unwrap_or_else(|_| {
+                                                   trace!("C{}: C{} didn't wait for the session",
+                                                          self.id,
+                                                          conn)
+                                               });
+        Err(Error::new(ErrorKind::ConnectionReset, "Replaced"))
+    }
 }
 impl Drop for Client {
     /// If a Client dies, we need to drop all its subscriptions.
     fn drop(&mut self) {
         let mut subs = self.subs.write().expect("write subs");
         subs.del_all(&self);
+        if let Some(sess) = self.session.take() {
+            let mut sm = self.sessions.lock().expect("lock sessions");
+            sm.close(&self, sess);
+        }
     }
 }
 
