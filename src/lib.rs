@@ -15,14 +15,23 @@ mod session;
 
 pub use dump::*;
 
+#[derive(Debug)]
 pub struct Conf {
     ports: RangeInclusive<u16>,
     ack_timeout: Duration,
     dumps: Vec<String>,
+    strict: bool,
+    idprefix: String,
+    userpass: Option<String>,
 }
 impl Conf {
     pub fn new() -> Self {
-        Conf { ports: 1883..=2000, dumps: vec![], ack_timeout: Duration::from_secs(1) }
+        Conf { ports: 1883..=2000,
+               dumps: vec![],
+               ack_timeout: Duration::from_secs(1),
+               strict: false,
+               idprefix: "".into(),
+               userpass: None }
     }
     pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
         self.ports = ports;
@@ -34,6 +43,18 @@ impl Conf {
     }
     pub fn ack_timeout(mut self, ms: u64) -> Self {
         self.ack_timeout = Duration::from_millis(ms);
+        self
+    }
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+    pub fn idprefix(mut self, s: String) -> Self {
+        self.idprefix = s;
+        self
+    }
+    pub fn userpass(mut self, s: Option<String>) -> Self {
+        self.userpass = s;
         self
     }
 }
@@ -50,6 +71,7 @@ fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
 }
 
 pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
+    debug!("Staring with {:?}", conf);
     let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));

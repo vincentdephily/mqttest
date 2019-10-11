@@ -32,6 +32,20 @@ struct Opt {
     /// rust lib.
     #[structopt(long = "dump", value_name = "DUMP")]
     dumps: Vec<String>,
+    /// Be stricter about optional behaviours.
+    ///
+    /// [MQTT-3.1.3-5]: Reject client_ids longer than 23 chars or not matching [0-9a-zA-Z].
+    /// [MQTT-3.1.3-6]: Reject empty client_ids.
+    #[structopt(long = "strict")]
+    strict: bool,
+    /// Reject clients whose client_id does not start with this prefix
+    #[structopt(long = "idprefix", default_value = "")]
+    idprefix: String,
+    /// Reject clients who didn't suppliy this username:password
+    ///
+    /// Note that MQTT allows passwords to be binary but we only accept UTF-8.
+    #[structopt(long = "userpass")]
+    userpass: Option<String>,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -65,7 +79,10 @@ fn main() {
              .init();
     match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
                            .dumpfiles(opt.dumps)
-                           .ack_timeout(opt.ack_timeout))
+                           .ack_timeout(opt.ack_timeout)
+                           .strict(opt.strict)
+                           .idprefix(opt.idprefix)
+                           .userpass(opt.userpass))
     {
         Ok((_port, server)) => {
             tokio::run(server);

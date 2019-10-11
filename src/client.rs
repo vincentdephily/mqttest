@@ -4,6 +4,7 @@ use futures::{sink::Wait,
               sync::{mpsc::{unbounded, UnboundedSender},
                      oneshot}};
 use log::*;
+use rand::{seq::SliceRandom, thread_rng};
 use std::{collections::BTreeMap,
           io::{Error, ErrorKind},
           sync::{Arc, Mutex, RwLock},
@@ -68,16 +69,22 @@ pub(crate) struct Client {
     writer: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
     /// Dump targets.
     dumps: Dump,
-    /// Acks currently pending, and what to do when it times out.
-    pend_acks: BTreeMap<PacketIdentifier, oneshot::Sender<()>>,
     /// Pending acks will timeout after that duration.
     ack_timeout: Duration,
+    /// Wether to allow or reject optional behaviours.
+    strict: bool,
+    /// Client_id must start with this.
+    idprefix: String,
+    /// Username:password must match this (if `userpass.is_some()`).
+    userpass: Option<String>,
     /// Shared list of all the client subscriptions.
     subs: Arc<RwLock<Subs>>,
     /// Shared list of all the client sessions.
     sessions: Arc<Mutex<Sessions>>,
     /// Client session.
     session: Option<SessionData>,
+    /// Acks currently pending, and what to do when it times out.
+    pend_acks: BTreeMap<PacketIdentifier, oneshot::Sender<()>>,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -98,11 +105,14 @@ impl Client {
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
                                   dumps,
-                                  pend_acks: BTreeMap::new(),
                                   ack_timeout: conf.ack_timeout,
+                                  strict: conf.strict,
+                                  idprefix: conf.idprefix.clone(),
+                                  userpass: conf.userpass.clone(),
                                   subs,
                                   sessions,
-                                  session: None };
+                                  session: None,
+                                  pend_acks: BTreeMap::new() };
         // Initialize json dump target.
         for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
             let s = s.replace("{c}", &format!("{}", id));
@@ -147,23 +157,29 @@ impl Client {
             // FIXME: handle session restore and different return codes
             (Packet::Connect(c), false) => {
                 self.conn = true;
-                self.name = c.client_id;
+                // Set and check client name
+                self.name = c.client_id.clone();
+                if let Err((code, desc)) = self.check_credentials(&c) {
+                    self.addr.send(Msg::PktOut(connack(false, code)));
+                    return Err(Error::new(ErrorKind::ConnectionAborted, desc));
+                }
+                // Load session
                 let mut sm = self.sessions.lock().expect("lock sessions");
                 let mut sess = sm.open(&self, c.clean_session);
                 let isold = sess.cons > 0;
+                debug!("C{}: loaded {} session {:?}",
+                       self.id,
+                       if isold { "old" } else { "new" },
+                       sess);
                 sess.cons += 1;
-                if isold {
-                    debug!("C{}: loaded old session {:?}", self.id, sess);
-                } else {
-                    debug!("C{}: loaded new session", self.id);
-                }
                 self.session = Some(sess);
+                // Send connack
                 self.addr.send(Msg::PktOut(connack(isold, ConnectReturnCode::Accepted)));
             },
             // FIXME: Use our own error type, and let this one log as INFO rather than ERROR
             (Packet::Disconnect, true) => {
                 self.conn = false;
-                return Err(Error::new(ErrorKind::ConnectionReset, "Received Disconnect"));
+                return Err(Error::new(ErrorKind::ConnectionAborted, "Disconnect"));
             },
             // Ping request
             // FIXME: accept ping when not connected ?
@@ -266,6 +282,49 @@ impl Client {
                                                           conn)
                                                });
         Err(Error::new(ErrorKind::ConnectionReset, "Replaced"))
+    }
+
+    /// Check client identifier.
+    /// http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718031
+    fn check_credentials(&mut self,
+                         con: &Connect)
+                         -> Result<(), (ConnectReturnCode, &'static str)> {
+        let allow = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        if self.name.len() > 23 || !self.name.chars().all(|c| allow.contains(c)) {
+            if self.strict {
+                return Err((ConnectReturnCode::RefusedIdentifierRejected,
+                            "Client_id too long or bad charset [MQTT-3.1.3-8]"));
+            }
+            warn!("C{}: Servers MAY reject {:?} [MQTT-3.1.3-5/MQTT-3.1.3-6]", self.id, self.name);
+        }
+        if self.name.is_empty() {
+            if !con.clean_session {
+                return Err((ConnectReturnCode::RefusedIdentifierRejected,
+                            "Empty client_id with session [MQTT-3.1.3-8]"));
+            }
+            let mut rng = thread_rng();
+            for _ in 0..20 {
+                self.name.push(*allow.as_bytes().choose(&mut rng).unwrap() as char);
+            }
+            info!("C{}: Unamed client, assigned random name {:?}", self.id, self.name);
+        }
+        if con.password.is_some() && con.username.is_none() {
+            return Err((ConnectReturnCode::BadUsernamePassword,
+                        "Password without a username [MQTT-3.1.2-22]"));
+        }
+        if let Some(ref req_up) = self.userpass {
+            let con_up = format!("{}:{}",
+                                 con.username.as_ref().unwrap_or(&String::new()),
+                                 con.password.as_ref().unwrap_or(&String::new()));
+            if &con_up != req_up {
+                return Err((ConnectReturnCode::BadUsernamePassword,
+                            "Bad username/password [MQTT-3.1.3.4/3.1.3.5]"));
+            }
+        }
+        if !self.name.starts_with(&self.idprefix) {
+            return Err((ConnectReturnCode::NotAuthorized, "Not Authorised [MQTT-5.4.2]"));
+        }
+        Ok(())
     }
 }
 impl Drop for Client {
