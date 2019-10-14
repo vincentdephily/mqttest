@@ -74,7 +74,7 @@ fn main() {
                                1 => LevelFilter::Debug,
                                _ => LevelFilter::Trace,
                            })
-             .default_format_timestamp_nanos(true)
+             .format_timestamp_micros()
              .parse_filters(&opt.log)
              .init();
     match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
