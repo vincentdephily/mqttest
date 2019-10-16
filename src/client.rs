@@ -5,7 +5,7 @@ use futures::{sink::Wait,
                      oneshot}};
 use log::*;
 use rand::{seq::SliceRandom, thread_rng};
-use std::{collections::BTreeMap,
+use std::{collections::HashMap,
           io::{Error, ErrorKind},
           sync::{Arc, Mutex, RwLock},
           time::{Duration, Instant}};
@@ -40,12 +40,16 @@ impl std::fmt::Debug for Addr {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum Msg {
     PktIn(Packet),
     PktOut(Packet),
     Replaced(ConnId, oneshot::Sender<SessionData>),
+    CheckQos,
 }
 
+/// Session data. To be restored at connection, and kept up to date during connection.
+///
 /// Note that we're not deriving Clone. The only place where a new SessionData should be
 /// instanciated is Session::open(). This helps making sure that only one SessionData instance
 /// exists for a given Client.name.
@@ -53,6 +57,11 @@ pub(crate) enum Msg {
 pub(crate) struct SessionData {
     /// Number of connections seen by this session. If it is 0, this is a brand new session.
     cons: usize,
+    /// Topics subscribed by this session. Distinct from the global `Subs` store.
+    subs: HashMap<String, QoS>,
+    /// Pending Qos1 acks. Unacked packets will be resent after a delay.
+    /// TODO: Resend immediately at reconnection too.
+    qos1: HashMap<PacketIdentifier, (Instant, Packet)>,
 }
 
 /// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
@@ -83,8 +92,8 @@ pub(crate) struct Client {
     sessions: Arc<Mutex<Sessions>>,
     /// Client session.
     session: Option<SessionData>,
-    /// Acks currently pending, and what to do when it times out.
-    pend_acks: BTreeMap<PacketIdentifier, oneshot::Sender<()>>,
+    /// Handle to future sending the next Msg::CheckQos.
+    qos1_check: Option<DelaySend>,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -112,7 +121,7 @@ impl Client {
                                   subs,
                                   sessions,
                                   session: None,
-                                  pend_acks: BTreeMap::new() };
+                                  qos1_check: None };
         // Initialize json dump target.
         for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
             let s = s.replace("{c}", &format!("{}", id));
@@ -127,6 +136,7 @@ impl Client {
                             Msg::PktIn(p) => client.handle_pkt_in(p),
                             Msg::PktOut(p) => client.handle_pkt_out(p),
                             Msg::Replaced(i, c) => client.handle_replaced(i, c),
+                            Msg::CheckQos => client.handle_check_qos(),
                         }.map_err(move |e| {
                              error!("C{}: msg: {}", id, e);
                          })
@@ -154,7 +164,6 @@ impl Client {
         self.dumps.dump(self.id, &self.name, "C", &pkt);
         match (pkt, self.conn) {
             // Connection
-            // FIXME: handle session restore and different return codes
             (Packet::Connect(c), false) => {
                 self.conn = true;
                 // Set and check client name
@@ -172,6 +181,10 @@ impl Client {
                        if isold { "old" } else { "new" },
                        sess);
                 sess.cons += 1;
+                let mut subs = self.subs.write().expect("write subs");
+                for (topic, qos) in sess.subs.iter() {
+                    subs.add(&topic, *qos, self.id, self.addr.clone());
+                }
                 self.session = Some(sess);
                 // Send connack
                 self.addr.send(Msg::PktOut(connack(isold, ConnectReturnCode::Accepted)));
@@ -182,21 +195,16 @@ impl Client {
                 return Err(Error::new(ErrorKind::ConnectionAborted, "Disconnect"));
             },
             // Ping request
-            // FIXME: accept ping when not connected ?
             (Packet::PingReq, true) => self.addr.send(Msg::PktOut(pingresp())),
             // Puback: cancel the resend timer if the ack was expected, die otherwise.
-            (Packet::Puback(pid), true) => match self.pend_acks.remove(&pid) {
-                Some(handle) => {
-                    debug!("C{}: Puback {:?} OK", self.id, pid);
-                    handle.send(()).expect("Cancel pending ack");
-                },
-                None => {
+            (Packet::Puback(pid), true) => {
+                let sess = self.session.as_mut().expect("unwrap session");
+                if sess.qos1.remove(&pid).is_none() {
                     return Err(Error::new(ErrorKind::InvalidData,
-                                          format!("Puback {:?} unexpected", pid)))
-                },
+                                          format!("Puback {:?} unexpected", pid)));
+                }
             },
             // Publish
-            // FIXME: support AtMostOnce see https://github.com/00imvj00/mqttrs/issues/6
             (Packet::Publish(p), true) => {
                 if let Some(subs) = self.subs.read().expect("read subs").get(&p.topic_name) {
                     for s in subs.values() {
@@ -222,18 +230,17 @@ impl Client {
                 }
             },
             // Subscription request
-            // FIXME: support AtMostOnce see https://github.com/00imvj00/mqttrs/issues/6
             (Packet::Subscribe(Subscribe { pid, topics }), true) => {
                 let mut subs = self.subs.write().expect("write subs");
-                let ret_codes =
-                    topics.iter()
-                          .map(|SubscribeTopic { topic_path, qos }| {
-                              assert_ne!(QoS::ExactlyOnce, *qos, "ExactlyOnce not supported yet");
-                              subs.add(topic_path, *qos, self);
-                              SubscribeReturnCodes::Success(*qos)
-                          })
-                          .collect();
-                self.addr.send(Msg::PktOut(suback(pid, ret_codes)));
+                let sess = self.session.as_mut().expect("unwrap session");
+                let mut codes = Vec::new();
+                for SubscribeTopic { topic_path, qos } in topics {
+                    assert_ne!(QoS::ExactlyOnce, qos, "ExactlyOnce not supported yet");
+                    subs.add(&topic_path, qos, self.id, self.addr.clone());
+                    sess.subs.insert(topic_path.clone(), qos);
+                    codes.push(SubscribeReturnCodes::Success(qos));
+                }
+                self.addr.send(Msg::PktOut(suback(pid, codes)));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -249,20 +256,21 @@ impl Client {
         match &pkt {
             Packet::Publish(p) if p.pid.is_some() => {
                 // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
-                // ack never comes, resend.
-                // FIXME: Configurable maximum number of resend attempts.
-                let pid = p.pid.unwrap();
-                let id = self.id.clone();
-                debug!("C{}: waiting for {:?} + {:?}", id, pid, self.pend_acks);
-                let p = pkt.clone();
-                let addr = self.addr.clone();
-                let handle = delay_cancel(self.ack_timeout, move || {
-                    warn!("C{}: ack timeout {:?}, resending", id, pid);
-                    addr.send(Msg::PktOut(p));
-                });
-                if let Some(prev) = self.pend_acks.insert(pid, handle) {
-                    // Reusing a not-yet-acked pid is a server error, not a client error.
-                    error!("C{}: overwriting {:?} {:?}", self.id, pid, prev);
+                let pid = p.pid.expect("pid");
+                let sess = self.session.as_mut().expect("unwrap session");
+                let deadline = Instant::now() + self.ack_timeout;
+                debug!("C{}: waiting for {:?} + {:?}@{:?}", self.id, sess.qos1, pid, deadline);
+
+                // Remember the details so we can aceept the ack or resend the pkt.
+                let prev = sess.qos1.insert(pid, (deadline, pkt.clone()));
+                assert!(prev.is_none(), "C{}: Server error: reusing {:?} {:?}", self.id, pid, prev);
+
+                // Schedule the next check for timedout acks.
+                // FIXME: MQTT5 now specifies that when using a reliable transport (TCP), resending
+                // should only happen at next connection.
+                if sess.qos1.values().map(|(d, _)| d).min().unwrap() == &deadline {
+                    let addr = self.addr.clone();
+                    self.qos1_check = Some(DelaySend::new(deadline, addr, Msg::CheckQos));
                 }
             },
             _ => (),
@@ -276,12 +284,36 @@ impl Client {
                        chan: oneshot::Sender<SessionData>)
                        -> Result<(), Error> {
         info!("C{}: replaced by connection {}", self.id, conn);
+        self.conn = false;
         chan.send(self.session.take().unwrap()).unwrap_or_else(|_| {
                                                    trace!("C{}: C{} didn't wait for the session",
                                                           self.id,
                                                           conn)
                                                });
         Err(Error::new(ErrorKind::ConnectionReset, "Replaced"))
+    }
+
+    /// Go trhough self.session.qos1 and resend any timedout packets.
+    fn handle_check_qos(&mut self) -> Result<(), Error> {
+        let sess = self.session.as_mut().expect("unwrap session");
+        trace!("C{}: check Qos acks {:?}", self.id, sess.qos1);
+        let mut now = Instant::now();
+        let id = self.id;
+        let addr = self.addr.clone();
+        // FIXME: Should be able to just move pkt.
+        sess.qos1.retain(|pid, (deadline, pkt)| {
+                     if deadline > &mut now {
+                         warn!("C{}: Timeout receiving ack {:?}, resending packet", id, pid);
+                         addr.send(Msg::PktOut(pkt.clone()));
+                         false
+                     } else {
+                         true
+                     }
+                 });
+        if let Some(deadline) = sess.qos1.values().map(|(d, _)| d).min() {
+            self.qos1_check = Some(DelaySend::new(*deadline, self.addr.clone(), Msg::CheckQos));
+        }
+        Ok(())
     }
 
     /// Check client identifier.
@@ -339,11 +371,19 @@ impl Drop for Client {
     }
 }
 
-/// Run spawn a future that calls the closure after a delay, and return a cancellation handle.
-/// Cancel it using `handle.send(()).unwrap()`.
-fn delay_cancel(delay: Duration, act: impl FnOnce() -> () + 'static + Send) -> oneshot::Sender<()> {
-    let (sx, rx) = oneshot::channel();
-    let f = Delay::new(Instant::now() + delay).map(|_| act());
-    tokio::spawn(f.select2(rx).map(|_| ()).map_err(|_| ()));
-    sx
+/// Spawn a future that sends `Msg` to `Addr` at `Instant`, and can be cancelled by droping the
+/// returned DelaySend struct.
+struct DelaySend(oneshot::Receiver<()>);
+impl DelaySend {
+    fn new(deadline: Instant, addr: Addr, msg: Msg) -> Self {
+        trace!("DelaySend {:?} {:?} {:?}", deadline, addr, msg);
+        // Future that resolves at the specified time, and then sends the message.
+        let send = Delay::new(deadline).map(move |_| addr.send(msg));
+        // Future that resolves when `r` is droped.
+        let (mut s, r) = oneshot::channel();
+        let cancel = s.poll_cancel();
+        // Spawned future resolves when `send` or `cancel` does.
+        tokio::spawn(send.select2(cancel).map(|_| ()).map_err(|_| ()));
+        Self(r)
+    }
 }
