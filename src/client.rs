@@ -136,7 +136,7 @@ impl Client {
                             Msg::PktIn(p) => client.handle_pkt_in(p),
                             Msg::PktOut(p) => client.handle_pkt_out(p),
                             Msg::Replaced(i, c) => client.handle_replaced(i, c),
-                            Msg::CheckQos => client.handle_check_qos(),
+                            Msg::CheckQos => client.handle_check_qos(Instant::now()),
                         }.map_err(move |e| {
                              error!("C{}: msg: {}", id, e);
                          })
@@ -186,6 +186,8 @@ impl Client {
                     subs.add(&topic, *qos, self.id, self.addr.clone());
                 }
                 self.session = Some(sess);
+                // Handle QoS
+                self.addr.send(Msg::CheckQos);
                 // Send connack
                 self.addr.send(Msg::PktOut(connack(isold, ConnectReturnCode::Accepted)));
             },
@@ -294,15 +296,14 @@ impl Client {
     }
 
     /// Go trhough self.session.qos1 and resend any timedout packets.
-    fn handle_check_qos(&mut self) -> Result<(), Error> {
+    fn handle_check_qos(&mut self, reftime: Instant) -> Result<(), Error> {
         let sess = self.session.as_mut().expect("unwrap session");
         trace!("C{}: check Qos acks {:?}", self.id, sess.qos1);
-        let mut now = Instant::now();
         let id = self.id;
         let addr = self.addr.clone();
         // FIXME: Should be able to just move pkt.
         sess.qos1.retain(|pid, (deadline, pkt)| {
-                     if deadline > &mut now {
+                     if *deadline > reftime {
                          warn!("C{}: Timeout receiving ack {:?}, resending packet", id, pid);
                          addr.send(Msg::PktOut(pkt.clone()));
                          false
