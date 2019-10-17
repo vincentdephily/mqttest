@@ -55,10 +55,7 @@ impl From<QoS> for DumpQos {
     }
 }
 
-/// Parsed QoS+PacketIdentifier. Note that the identifier MUST be absent for AtMostOnce and present
-/// for AtLeastOnce/ExactlyOnce.
-// FIXME: Instead of panicing, return a result and let `DumpMqtt::from(&Packet)` fail cleanly just
-// for this client and/or dump a `DumpMqtt::Invalid` variant.
+/// Parsed QoS+PacketIdentifier.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum DumpQosId {
     AtMostOnce,
@@ -66,12 +63,11 @@ pub enum DumpQosId {
     ExactlyOnce(DumpPid),
 }
 impl DumpQosId {
-    fn from(q: QoS, p: Option<PacketIdentifier>) -> Self {
-        match (q, p) {
-            (QoS::AtMostOnce, None) => Self::AtMostOnce,
-            (QoS::AtLeastOnce, Some(i)) => Self::AtLeastOnce(i.0),
-            (QoS::ExactlyOnce, Some(i)) => Self::ExactlyOnce(i.0),
-            _ => panic!("Can't have qos {:?} with pid {:?}", q, p),
+    fn from(qp: QosPid) -> Self {
+        match qp {
+            QosPid::AtMostOnce => Self::AtMostOnce,
+            QosPid::AtLeastOnce(i) => Self::AtLeastOnce(i.get()),
+            QosPid::ExactlyOnce(i) => Self::ExactlyOnce(i.get()),
         }
     }
 }
@@ -80,7 +76,7 @@ impl DumpQosId {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpConnack {
     session: bool,
-    code: u8, //FIXME: Proper names
+    code: String, //FIXME proper type
 }
 
 /// Parsed MQTT publish packet.
@@ -142,13 +138,13 @@ pub enum DumpMqtt {
     Puback(DumpPid),
     Pubrec(DumpPid),
     Pubrel(DumpPid),
-    PubComp(DumpPid),
+    Pubcomp(DumpPid),
     Subscribe(DumpSubscribe),
-    SubAck(DumpSuback),
-    UnSubscribe(DumpUnsubscribe),
-    UnSubAck(DumpPid),
-    PingReq,
-    PingResp,
+    Suback(DumpSuback),
+    Unsubscribe(DumpUnsubscribe),
+    Unsuback(DumpPid),
+    Pingreq,
+    Pingresp,
     Disconnect,
 }
 impl DumpMqtt {
@@ -160,13 +156,13 @@ impl DumpMqtt {
             Self::Puback(_) => "puback",
             Self::Pubrec(_) => "pubrec",
             Self::Pubrel(_) => "pubrel",
-            Self::PubComp(_) => "pubcomp",
+            Self::Pubcomp(_) => "pubcomp",
             Self::Subscribe(_) => "sub",
-            Self::SubAck(_) => "suback",
-            Self::UnSubscribe(_) => "unsub",
-            Self::UnSubAck(_) => "unsuback",
-            Self::PingReq => "pingreq",
-            Self::PingResp => "pingresp",
+            Self::Suback(_) => "suback",
+            Self::Unsubscribe(_) => "unsub",
+            Self::Unsuback(_) => "unsuback",
+            Self::Pingreq => "pingreq",
+            Self::Pingresp => "pingresp",
             Self::Disconnect => "disco",
         }
     }
@@ -176,28 +172,28 @@ impl From<&Packet> for DumpMqtt {
         match p {
             Packet::Connect(p) => Self::Connect(p.client_id.clone()),
             Packet::Connack(p) => {
-                Self::Connack(DumpConnack { session: p.session_present, code: p.code.to_u8() })
+                Self::Connack(DumpConnack { session: p.session_present, code: format!("{:?}",p.code) })
             },
             Packet::Publish(p) => {
                 Self::Publish(DumpPublish { dup: p.dup,
-                                            qos: DumpQosId::from(p.qos, p.pid),
+                                            qos: DumpQosId::from(p.qospid),
                                             topic: p.topic_name.clone(),
                                             utf8: String::from_utf8(p.payload.clone()).ok(),
                                             bytes: p.payload.clone() })
             },
-            Packet::Puback(p) => Self::Puback(p.0),
-            Packet::Pubrec(p) => Self::Pubrec(p.0),
-            Packet::Pubrel(p) => Self::Pubrel(p.0),
-            Packet::PubComp(p) => Self::PubComp(p.0),
+            Packet::Puback(p) => Self::Puback(p.get()),
+            Packet::Pubrec(p) => Self::Pubrec(p.get()),
+            Packet::Pubrel(p) => Self::Pubrel(p.get()),
+            Packet::Pubcomp(p) => Self::Pubcomp(p.get()),
             Packet::Subscribe(p) => {
                 let topics =
                     p.topics
                      .iter()
                      .map(|s| DumpSubscribeTopic { topic: s.topic_path.clone(), qos: s.qos.into() })
                      .collect();
-                Self::Subscribe(DumpSubscribe { pid: p.pid.0, topics })
+                Self::Subscribe(DumpSubscribe { pid: p.pid.get(), topics })
             },
-            Packet::SubAck(p) => {
+            Packet::Suback(p) => {
                 let codes = p.return_codes
                              .iter()
                              .map(|c| match c {
@@ -213,14 +209,14 @@ impl From<&Packet> for DumpMqtt {
                                  SubscribeReturnCodes::Failure => DumpSubackcode::Failure,
                              })
                              .collect();
-                Self::SubAck(DumpSuback { pid: p.pid.0, codes })
+                Self::Suback(DumpSuback { pid: p.pid.get(), codes })
             },
-            Packet::UnSubscribe(p) => {
-                Self::UnSubscribe(DumpUnsubscribe { pid: p.pid.0, topics: p.topics.clone() })
+            Packet::Unsubscribe(p) => {
+                Self::Unsubscribe(DumpUnsubscribe { pid: p.pid.get(), topics: p.topics.clone() })
             },
-            Packet::UnSubAck(p) => Self::UnSubAck(p.0),
-            Packet::PingReq => Self::PingReq,
-            Packet::PingResp => Self::PingResp,
+            Packet::Unsuback(p) => Self::Unsuback(p.get()),
+            Packet::Pingreq => Self::Pingreq,
+            Packet::Pingresp => Self::Pingresp,
             Packet::Disconnect => Self::Disconnect,
         }
     }

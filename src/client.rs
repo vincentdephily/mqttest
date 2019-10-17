@@ -65,7 +65,7 @@ pub(crate) struct SessionData {
     subs: HashMap<String, QoS>,
     /// Pending Qos1 acks. Unacked packets will be resent after a delay.
     /// TODO: Resend immediately at reconnection too.
-    qos1: HashMap<PacketIdentifier, (Instant, Packet)>,
+    qos1: HashMap<Pid, (Instant, Packet)>,
 }
 
 /// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
@@ -151,7 +151,7 @@ impl Client {
         // This future decodes MQTT packets and forwards them as `Msg`s.
         let fr = FramedRead::new(read, Codec(id));
         let pkt = fr.map_err(move |e| {
-                        error!("C{}: pkt: {}", id, e);
+                        error!("C{}: invalid packet: {}", id, e);
                     })
                     .for_each(move |pktin| {
                         sx.unbounded_send(Msg::PktIn(pktin))
@@ -174,8 +174,8 @@ impl Client {
             (Packet::Connect(c), false) => {
                 self.conn = true;
                 self.ack_timeout = match c.protocol {
-                    Protocol::MQTT(_) => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
-                    Protocol::MQIsdp(_) => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
+                    Protocol::MQTT311 => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
+                    Protocol::MQIsdp => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
                 };
                 // Set and check client name
                 self.name = c.client_id.clone();
@@ -208,7 +208,7 @@ impl Client {
                 return Err(Error::new(ErrorKind::ConnectionAborted, "Disconnect"));
             },
             // Ping request
-            (Packet::PingReq, true) => self.addr.send(Msg::PktOut(pingresp())),
+            (Packet::Pingreq, true) => self.addr.send(Msg::PktOut(pingresp())),
             // Puback: cancel the resend timer if the ack was expected, die otherwise.
             (Packet::Puback(pid), true) => {
                 let sess = self.session.as_mut().expect("unwrap session");
@@ -223,23 +223,24 @@ impl Client {
                     for s in subs.values() {
                         let p =
                             publish(false,
-                                    s.qos,
-                                    false,
-                                    p.topic_name.clone(),
                                     // FIXME: use proper pid value for that client
                                     match s.qos {
-                                        QoS::AtMostOnce => None,
-                                        QoS::AtLeastOnce => Some(PacketIdentifier(64)),
+                                        QoS::AtMostOnce => QosPid::AtMostOnce,
+                                        QoS::AtLeastOnce => {
+                                            QosPid::AtLeastOnce(PacketIdentifier::new(64).unwrap())
+                                        },
                                         QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
                                     },
+                                    false,
+                                    p.topic_name.clone(),
                                     p.payload.clone());
                         s.addr.send(Msg::PktOut(p));
                     }
                 }
-                match p.qos {
-                    QoS::AtMostOnce => (),
-                    QoS::AtLeastOnce => self.addr.send(Msg::PktOut(puback(p.pid.unwrap()))),
-                    QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
+                match p.qospid {
+                    QosPid::AtMostOnce => (),
+                    QosPid::AtLeastOnce(pid) => self.addr.send(Msg::PktOut(puback(pid))),
+                    QosPid::ExactlyOnce(_) => panic!("ExactlyOnce not supported yet"),
                 }
             },
             // Subscription request
@@ -267,9 +268,13 @@ impl Client {
         info!("C{}: send Packet::{:?}", self.id, pkt);
         self.dumps.dump(self.id, &self.name, "S", &pkt);
         match &pkt {
-            Packet::Publish(p) if p.pid.is_some() => {
+            Packet::Publish(p) if p.qospid != QosPid::AtMostOnce => {
                 // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
-                let pid = p.pid.expect("pid");
+                let pid = match p.qospid {
+                    QosPid::AtLeastOnce(p) => p,
+                    QosPid::ExactlyOnce(p) => p,
+                    _ => unreachable!(),
+                };
                 let sess = self.session.as_mut().expect("unwrap session");
                 let deadline = Instant::now() + self.ack_timeout;
                 debug!("C{}: waiting for {:?} + {:?}@{:?}", self.id, sess.qos1, pid, deadline);
@@ -354,9 +359,9 @@ impl Client {
                         "Password without a username [MQTT-3.1.2-22]"));
         }
         if let Some(ref req_up) = self.userpass {
-            let con_up = format!("{}:{}",
+            let con_up = format!("{}:{:?}",
                                  con.username.as_ref().unwrap_or(&String::new()),
-                                 con.password.as_ref().unwrap_or(&String::new()));
+                                 con.password.as_ref().unwrap_or(&Vec::new()));
             if &con_up != req_up {
                 return Err((ConnectReturnCode::BadUsernamePassword,
                             "Bad username/password [MQTT-3.1.3.4/3.1.3.5]"));

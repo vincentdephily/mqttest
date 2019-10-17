@@ -10,7 +10,7 @@ edition = "2018"
 bytes = "0.4.12"
 futures = "0.1.28"
 log = "0.4.7"
-mqttrs = { git = "https://github.com/vincentdephily/mqttrs", rev = "cbd6011330faf2b05d67983d03588fdcbd4fe913" }
+mqttrs = { git = "https://github.com/vincentdephily/mqttrs", rev = "7c77d351d0da473935308e7e143ea7a544831440" }
 serde =  { version = "1.0.99", features = ["derive"] }
 serde_json = "1.0.40"
 time = "0.1.42"
