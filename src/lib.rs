@@ -18,7 +18,7 @@ pub use dump::*;
 #[derive(Debug)]
 pub struct Conf {
     ports: RangeInclusive<u16>,
-    ack_timeout: Duration,
+    ack_timeouts: (Option<Duration>, Option<Duration>),
     dumps: Vec<String>,
     strict: bool,
     idprefix: String,
@@ -28,7 +28,7 @@ impl Conf {
     pub fn new() -> Self {
         Conf { ports: 1883..=2000,
                dumps: vec![],
-               ack_timeout: Duration::from_secs(1),
+               ack_timeouts: (Some(Duration::from_secs(5)), None),
                strict: false,
                idprefix: "".into(),
                userpass: None }
@@ -41,8 +41,8 @@ impl Conf {
         self.dumps.extend(v);
         self
     }
-    pub fn ack_timeout(mut self, ms: u64) -> Self {
-        self.ack_timeout = Duration::from_millis(ms);
+    pub fn ack_timeouts(mut self, mqtt3: Option<Duration>, mqtt5: Option<Duration>) -> Self {
+        self.ack_timeouts = (mqtt3, mqtt5);
         self
     }
     pub fn strict(mut self, strict: bool) -> Self {
@@ -71,7 +71,7 @@ fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
 }
 
 pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
-    debug!("Staring with {:?}", conf);
+    debug!("Start {:?}", conf);
     let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));

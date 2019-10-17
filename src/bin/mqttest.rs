@@ -1,12 +1,23 @@
 use env_logger::builder;
 use log::*;
 use mqttest::{start, Conf};
+use std::time::Duration;
 use structopt::{clap::AppSettings::*, StructOpt};
 
+#[derive(Debug)]
+struct OptDuration(Option<Duration>);
+impl std::str::FromStr for OptDuration {
+    type Err = std::num::ParseIntError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &s[0..1] {
+            "-" => Ok(OptDuration(None)),
+            _ => Ok(OptDuration(Some(Duration::from_millis(s.parse()?)))),
+        }
+    }
+}
 
-#[derive(StructOpt)]
-#[structopt(name = "mqttest",
-            global_settings = &[ColoredHelp, DeriveDisplayOrder, InferSubcommands, DisableHelpSubcommand, VersionlessSubcommands])]
+#[derive(StructOpt, Debug)]
+#[structopt(name = "mqttest", global_settings = &[ColoredHelp, DeriveDisplayOrder, UnifiedHelpMessage])]
 struct Opt {
     /// Increase log level (info -> debug -> trace). Shorthand for "--log debug" or "--log trace".
     #[structopt(short = "v", parse(from_occurrences))]
@@ -22,9 +33,22 @@ struct Opt {
                 max_values = 2,
                 default_value = "1883-2000")]
     ports: Vec<u16>,
-    /// How long to wait for QoS1/2 acks.
-    #[structopt(long = "ack_timeout", value_name = "ms", default_value = "1000")]
-    ack_timeout: u64,
+    ///// Resend QoS1/2 packet during connection if ack takes too long.
+    /// Resend packet during connection if ack takes longer than this.
+    ///
+    /// This only concerns resending during a live connection: resending at connection start (if
+    /// session was restored) always happens immediately. Use "-" to disable resending.
+    ///
+    /// The second value is for MQTT5 clients. MQTT5 forbids resending during connection, only set
+    /// an MQTT5 value for testing purposes. MQTT3 doesn't specify a behaviour, but many
+    /// client/servers do resend non-acked packets during connection.
+    #[structopt(long = "ack-timeouts",
+                value_name = "ms",
+                default_value = "5000,-",
+                use_delimiter = true,
+                min_values = 1,
+                max_values = 2)]
+    ack_timeouts: Vec<OptDuration>,
     /// Dump packets to file.
     ///
     /// The filename can contain a `{c}` placeholder that will be replaced by the connection
@@ -77,9 +101,11 @@ fn main() {
              .format_timestamp_micros()
              .parse_filters(&opt.log)
              .init();
+    trace!("Cli {:?}", opt);
     match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
                            .dumpfiles(opt.dumps)
-                           .ack_timeout(opt.ack_timeout)
+                           .ack_timeouts(opt.ack_timeouts[0].0,
+                                         opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
                            .strict(opt.strict)
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass))

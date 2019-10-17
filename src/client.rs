@@ -15,6 +15,10 @@ use tokio::{codec::{FramedRead, FramedWrite},
             prelude::*,
             timer::Delay};
 
+
+/// Duration longer than program's lifetime (not quite `u64::MAX` so we can add `Instant::now()`).
+const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
 /// Connection id for debug and indexing purposes.
 pub type ConnId = u64;
 
@@ -78,6 +82,8 @@ pub(crate) struct Client {
     writer: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
     /// Dump targets.
     dumps: Dump,
+    /// Protocol-specific ack-timeout config.
+    ack_timeouts_conf: (Option<Duration>, Option<Duration>),
     /// Pending acks will timeout after that duration.
     ack_timeout: Duration,
     /// Wether to allow or reject optional behaviours.
@@ -114,7 +120,8 @@ impl Client {
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)).wait(),
                                   dumps,
-                                  ack_timeout: conf.ack_timeout,
+                                  ack_timeouts_conf: conf.ack_timeouts,
+                                  ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
                                   strict: conf.strict,
                                   idprefix: conf.idprefix.clone(),
                                   userpass: conf.userpass.clone(),
@@ -166,6 +173,10 @@ impl Client {
             // Connection
             (Packet::Connect(c), false) => {
                 self.conn = true;
+                self.ack_timeout = match c.protocol {
+                    Protocol::MQTT(_) => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
+                    Protocol::MQIsdp(_) => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
+                };
                 // Set and check client name
                 self.name = c.client_id.clone();
                 if let Err((code, desc)) = self.check_credentials(&c) {
@@ -268,11 +279,8 @@ impl Client {
                 assert!(prev.is_none(), "C{}: Server error: reusing {:?} {:?}", self.id, pid, prev);
 
                 // Schedule the next check for timedout acks.
-                // FIXME: MQTT5 now specifies that when using a reliable transport (TCP), resending
-                // should only happen at next connection.
-                if sess.qos1.values().map(|(d, _)| d).min().unwrap() == &deadline {
-                    let addr = self.addr.clone();
-                    self.qos1_check = Some(DelaySend::new(deadline, addr, Msg::CheckQos));
+                if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
+                    self.qos1_check = Some(DelaySend::new(deadline, &self.addr, Msg::CheckQos));
                 }
             },
             _ => (),
@@ -312,7 +320,7 @@ impl Client {
                      }
                  });
         if let Some(deadline) = sess.qos1.values().map(|(d, _)| d).min() {
-            self.qos1_check = Some(DelaySend::new(*deadline, self.addr.clone(), Msg::CheckQos));
+            self.qos1_check = Some(DelaySend::new(*deadline, &self.addr, Msg::CheckQos));
         }
         Ok(())
     }
@@ -376,9 +384,10 @@ impl Drop for Client {
 /// returned DelaySend struct.
 struct DelaySend(oneshot::Receiver<()>);
 impl DelaySend {
-    fn new(deadline: Instant, addr: Addr, msg: Msg) -> Self {
+    fn new(deadline: Instant, addr: &Addr, msg: Msg) -> Self {
         trace!("DelaySend {:?} {:?} {:?}", deadline, addr, msg);
         // Future that resolves at the specified time, and then sends the message.
+        let addr = addr.clone();
         let send = Delay::new(deadline).map(move |_| addr.send(msg));
         // Future that resolves when `r` is droped.
         let (mut s, r) = oneshot::channel();
