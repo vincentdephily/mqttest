@@ -48,6 +48,7 @@ impl std::fmt::Debug for Addr {
 pub(crate) enum Msg {
     PktIn(Packet),
     PktOut(Packet),
+    Publish(QoS, Publish),
     Replaced(ConnId, oneshot::Sender<SessionData>),
     CheckQos,
 }
@@ -61,11 +62,27 @@ pub(crate) enum Msg {
 pub(crate) struct SessionData {
     /// Number of connections seen by this session. If it is 0, this is a brand new session.
     cons: usize,
+    /// The last pid generated for this client.
+    prev_pid: Option<Pid>,
     /// Topics subscribed by this session. Distinct from the global `Subs` store.
     subs: HashMap<String, QoS>,
     /// Pending Qos1 acks. Unacked packets will be resent after a delay.
     /// TODO: Resend immediately at reconnection too.
     qos1: HashMap<Pid, (Instant, Packet)>,
+}
+impl SessionData {
+    /// Return the next pid and store it in self.
+    fn next_pid(&mut self) -> Pid {
+        let mut pid = match self.prev_pid {
+            Some(p) => p + 1,
+            None => Pid::new(),
+        };
+        while self.qos1.contains_key(&pid) {
+            pid = pid + 1;
+        }
+        self.prev_pid = Some(pid);
+        pid
+    }
 }
 
 /// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
@@ -142,6 +159,7 @@ impl Client {
                         match msg {
                             Msg::PktIn(p) => client.handle_pkt_in(p),
                             Msg::PktOut(p) => client.handle_pkt_out(p),
+                            Msg::Publish(q, p) => client.handle_publish(q, p),
                             Msg::Replaced(i, c) => client.handle_replaced(i, c),
                             Msg::CheckQos => client.handle_check_qos(Instant::now()),
                         }.map_err(move |e| {
@@ -221,20 +239,7 @@ impl Client {
             (Packet::Publish(p), true) => {
                 if let Some(subs) = self.subs.read().expect("read subs").get(&p.topic_name) {
                     for s in subs.values() {
-                        let p =
-                            publish(false,
-                                    // FIXME: use proper pid value for that client
-                                    match s.qos {
-                                        QoS::AtMostOnce => QosPid::AtMostOnce,
-                                        QoS::AtLeastOnce => {
-                                            QosPid::AtLeastOnce(PacketIdentifier::new(64).unwrap())
-                                        },
-                                        QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
-                                    },
-                                    false,
-                                    p.topic_name.clone(),
-                                    p.payload.clone());
-                        s.addr.send(Msg::PktOut(p));
+                        s.addr.send(Msg::Publish(s.qos, p.clone()));
                     }
                 }
                 match p.qospid {
@@ -267,31 +272,33 @@ impl Client {
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
         self.dumps.dump(self.id, &self.name, "S", &pkt);
-        match &pkt {
-            Packet::Publish(p) if p.qospid != QosPid::AtMostOnce => {
-                // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
-                let pid = match p.qospid {
-                    QosPid::AtLeastOnce(p) => p,
-                    QosPid::ExactlyOnce(p) => p,
-                    _ => unreachable!(),
-                };
-                let sess = self.session.as_mut().expect("unwrap session");
-                let deadline = Instant::now() + self.ack_timeout;
-                debug!("C{}: waiting for {:?} + {:?}@{:?}", self.id, sess.qos1, pid, deadline);
-
-                // Remember the details so we can aceept the ack or resend the pkt.
-                let prev = sess.qos1.insert(pid, (deadline, pkt.clone()));
-                assert!(prev.is_none(), "C{}: Server error: reusing {:?} {:?}", self.id, pid, prev);
-
-                // Schedule the next check for timedout acks.
-                if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
-                    self.qos1_check = Some(DelaySend::new(deadline, &self.addr, Msg::CheckQos));
-                }
-            },
-            _ => (),
-        }
         self.writer.send(pkt)?;
-        self.writer.flush()
+        self.writer.flush().map_err(|e| e.into())
+    }
+
+    fn handle_publish(&mut self, qos: QoS, p: Publish) -> Result<(), Error> {
+        let sess = self.session.as_mut().expect("unwrap session");
+        let qospid = match qos {
+            QoS::AtMostOnce => QosPid::AtMostOnce,
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(sess.next_pid()),
+            QoS::ExactlyOnce => panic!("ExactlyOnce not supported yet"),
+        };
+        let pkt = publish(false, qospid, false, p.topic_name, p.payload);
+        if let QosPid::AtLeastOnce(pid) = qospid {
+            // Publish with QoS 1, remember the pid so that we can accept the ack later. If the
+            let deadline = Instant::now() + self.ack_timeout;
+            debug!("C{}: waiting for {:?} + {:?}@{:?}", self.id, sess.qos1, pid, deadline);
+
+            // Remember the details so we can aceept the ack or resend the pkt.
+            let prev = sess.qos1.insert(pid, (deadline, pkt.clone()));
+            assert!(prev.is_none(), "C{}: Server error: reusing {:?} {:?}", self.id, pid, prev);
+
+            // Schedule the next check for timedout acks.
+            if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
+                self.qos1_check = Some(DelaySend::new(deadline, &self.addr, Msg::CheckQos));
+            }
+        }
+        self.handle_pkt_out(pkt)
     }
 
     fn handle_replaced(&mut self,
