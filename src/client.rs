@@ -103,6 +103,11 @@ pub(crate) struct Client {
     ack_timeouts_conf: (Option<Duration>, Option<Duration>),
     /// Pending acks will timeout after that duration.
     ack_timeout: Duration,
+    /// Wait before acking publish and subscribe packets
+    // TODO: should be a ring buffer.
+    ack_delay: Duration,
+    /// Cancel handlers for packets sent with a delay.
+    delayed_send: Vec<DelaySend>,
     /// Wether to allow or reject optional behaviours.
     strict: bool,
     /// Client_id must start with this.
@@ -139,6 +144,8 @@ impl Client {
                                   dumps,
                                   ack_timeouts_conf: conf.ack_timeouts,
                                   ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
+                                  ack_delay: conf.ack_delay,
+                                  delayed_send: Vec::new(),
                                   strict: conf.strict,
                                   idprefix: conf.idprefix.clone(),
                                   userpass: conf.userpass.clone(),
@@ -244,7 +251,11 @@ impl Client {
                 }
                 match p.qospid {
                     QosPid::AtMostOnce => (),
-                    QosPid::AtLeastOnce(pid) => self.addr.send(Msg::PktOut(puback(pid))),
+                    QosPid::AtLeastOnce(pid) => {
+                        let d = Instant::now() + self.ack_delay;
+                        self.delayed_send
+                            .push(DelaySend::new(d, &self.addr, Msg::PktOut(puback(pid))));
+                    },
                     QosPid::ExactlyOnce(_) => panic!("ExactlyOnce not supported yet"),
                 }
             },
@@ -259,7 +270,9 @@ impl Client {
                     sess.subs.insert(topic_path.clone(), qos);
                     codes.push(SubscribeReturnCodes::Success(qos));
                 }
-                self.addr.send(Msg::PktOut(suback(pid, codes)));
+                let d = Instant::now() + self.ack_delay;
+                self.delayed_send
+                    .push(DelaySend::new(d, &self.addr, Msg::PktOut(suback(pid, codes))));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -271,6 +284,7 @@ impl Client {
     /// Send packets to client.
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
+        self.delayed_send.retain(|d| !d.expired());
         self.dumps.dump(self.id, &self.name, "S", &pkt);
         self.writer.send(pkt)?;
         self.writer.flush().map_err(|e| e.into())
@@ -393,7 +407,7 @@ impl Drop for Client {
 }
 
 /// Handle to a spawned future that can be canceled by droping the handle.
-struct DelaySend(oneshot::Receiver<()>);
+struct DelaySend(oneshot::Receiver<()>, Instant);
 impl DelaySend {
     /// Send `Msg` to `Addr` at `Instant`.
     // FIXME: It should be possible to reliably resolve the future as soon as the Receiver is
@@ -410,6 +424,10 @@ impl DelaySend {
                                       });
         // Spawn the future, ignoreing errors.
         tokio::spawn(fut.map(drop).map_err(drop));
-        Self(r)
+        Self(r, deadline)
+    }
+    /// Check if deadline has been reached.
+    fn expired(&self) -> bool {
+        self.1 < Instant::now()
     }
 }

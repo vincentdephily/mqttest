@@ -49,6 +49,9 @@ struct Opt {
                 min_values = 1,
                 max_values = 2)]
     ack_timeouts: Vec<OptDuration>,
+    /// Wait before sending publish and subscribe acks.
+    #[structopt(long = "ack-delay", value_name = "ms", default_value = "0")]
+    ack_delay: u64,
     /// Dump packets to file.
     ///
     /// The filename can contain a `{c}` placeholder that will be replaced by the connection
@@ -106,6 +109,7 @@ fn main() {
                            .dumpfiles(opt.dumps)
                            .ack_timeouts(opt.ack_timeouts[0].0,
                                          opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
+                           .ack_delay(Duration::from_millis(opt.ack_delay))
                            .strict(opt.strict)
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass))

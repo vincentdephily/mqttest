@@ -19,6 +19,7 @@ pub use dump::*;
 pub struct Conf {
     ports: RangeInclusive<u16>,
     ack_timeouts: (Option<Duration>, Option<Duration>),
+    ack_delay: Duration,
     dumps: Vec<String>,
     strict: bool,
     idprefix: String,
@@ -29,6 +30,7 @@ impl Conf {
         Conf { ports: 1883..=2000,
                dumps: vec![],
                ack_timeouts: (Some(Duration::from_secs(5)), None),
+               ack_delay: Duration::from_secs(0),
                strict: false,
                idprefix: "".into(),
                userpass: None }
@@ -43,6 +45,10 @@ impl Conf {
     }
     pub fn ack_timeouts(mut self, mqtt3: Option<Duration>, mqtt5: Option<Duration>) -> Self {
         self.ack_timeouts = (mqtt3, mqtt5);
+        self
+    }
+    pub fn ack_delay(mut self, d: Duration) -> Self {
+        self.ack_delay = d;
         self
     }
     pub fn strict(mut self, strict: bool) -> Self {
