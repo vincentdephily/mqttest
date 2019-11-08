@@ -392,20 +392,24 @@ impl Drop for Client {
     }
 }
 
-/// Spawn a future that sends `Msg` to `Addr` at `Instant`, and can be cancelled by droping the
-/// returned DelaySend struct.
+/// Handle to a spawned future that can be canceled by droping the handle.
 struct DelaySend(oneshot::Receiver<()>);
 impl DelaySend {
+    /// Send `Msg` to `Addr` at `Instant`.
+    // FIXME: It should be possible to reliably resolve the future as soon as the Receiver is
+    // dropped.
     fn new(deadline: Instant, addr: &Addr, msg: Msg) -> Self {
         trace!("DelaySend {:?} {:?} {:?}", deadline, addr, msg);
-        // Future that resolves at the specified time, and then sends the message.
         let addr = addr.clone();
-        let send = Delay::new(deadline).map(move |_| addr.send(msg));
-        // Future that resolves when `r` is droped.
-        let (mut s, r) = oneshot::channel();
-        let cancel = s.poll_cancel();
-        // Spawned future resolves when `send` or `cancel` does.
-        tokio::spawn(send.select2(cancel).map(|_| ()).map_err(|_| ()));
+        let (s, r) = oneshot::channel();
+        // Wait until deadline, check for cancellation, and send the msg.
+        let fut = Delay::new(deadline).map(move |_| {
+                                          if !s.is_canceled() {
+                                              addr.send(msg)
+                                          }
+                                      });
+        // Spawn the future, ignoreing errors.
+        tokio::spawn(fut.map(drop).map_err(drop));
         Self(r)
     }
 }
