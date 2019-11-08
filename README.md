@@ -1,17 +1,20 @@
 # MQTT test server
 
-This is an MQTT 3.11 server intended primarily for testing clients.
+This is an MQTT server intended primarily for testing clients.
 
 ## Target features
 
 * Automatic open port discovery (plays well with test suites).
 * Verbose log file and network dump (no need for RC-prone companion client)
+* Warn about or reject use of optional protocol features.
 * Controllable client test cases including
   - Ack delay.
   - Go offline, close connection.
   - Bad packet flow (spurious/missing ack/publish).
+  - Various protocol corner-cases.
 * Usable as rust lib or CLI.
 * No runtime deps (simplifies CI image)
+* MQTT 3.1.1 and MQTT 5
 
 ## Non-features
 
@@ -28,7 +31,7 @@ Install [rust][http://rust-lang.org/] if necessary.
 ### Standalone
 
     # Build and install it
-    cargo install
+    cargo install --path .
     # Run it with the default options
     mqttest
     # See help
