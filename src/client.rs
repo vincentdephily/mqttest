@@ -26,10 +26,37 @@ pub type ConnId = u64;
 #[derive(Clone)]
 pub struct Addr(UnboundedSender<Msg>, pub(crate) ConnId);
 impl Addr {
+    /// Send `Msg` to `Addr`.
     pub(crate) fn send(&self, msg: Msg) {
         if let Err(e) = self.0.unbounded_send(msg) {
             warn!("Trying to send to disconnected Addr {:?}", e);
         }
+    }
+    /// Send `Msg` to `Addr` at `Instant`.
+    fn send_at(&self, deadline: Instant, msg: Msg) {
+        trace!("send_at n{:?} {:?} {:?}", deadline, self, msg);
+        let addr = self.clone();
+        // Wait until deadline, and send the msg.
+        let fut = Delay::new(deadline).map(move |_| addr.send(msg));
+        // Spawn the future, ignoring errors.
+        tokio::spawn(fut.map(drop).map_err(drop));
+    }
+    /// Send `Msg` to `Addr` at `Instant`. Returns a handle that will cancel sending if dropped.
+    // FIXME: It should be possible to reliably resolve the future as soon as the Receiver is
+    // dropped.
+    fn send_at_cancel(&self, deadline: Instant, msg: Msg) -> oneshot::Receiver<()> {
+        trace!("send_at_cancel {:?} {:?} {:?}", deadline, self, msg);
+        let addr = self.clone();
+        let (s, r) = oneshot::channel();
+        // Wait until deadline, check for cancellation, and send the msg.
+        let fut = Delay::new(deadline).map(move |_| {
+                                          if !s.is_canceled() {
+                                              addr.send(msg)
+                                          }
+                                      });
+        // Spawn the future, ignoring errors.
+        tokio::spawn(fut.map(drop).map_err(drop));
+        r
     }
 }
 impl PartialEq for Addr {
@@ -106,8 +133,6 @@ pub(crate) struct Client {
     /// Wait before acking publish and subscribe packets
     // TODO: should be a ring buffer.
     ack_delay: Duration,
-    /// Cancel handlers for packets sent with a delay.
-    delayed_send: Vec<DelaySend>,
     /// Wether to allow or reject optional behaviours.
     strict: bool,
     /// Client_id must start with this.
@@ -121,7 +146,7 @@ pub(crate) struct Client {
     /// Client session.
     session: Option<SessionData>,
     /// Handle to future sending the next Msg::CheckQos.
-    qos1_check: Option<DelaySend>,
+    qos1_check: Option<oneshot::Receiver<()>>,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -145,7 +170,6 @@ impl Client {
                                   ack_timeouts_conf: conf.ack_timeouts,
                                   ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
                                   ack_delay: conf.ack_delay,
-                                  delayed_send: Vec::new(),
                                   strict: conf.strict,
                                   idprefix: conf.idprefix.clone(),
                                   userpass: conf.userpass.clone(),
@@ -253,8 +277,7 @@ impl Client {
                     QosPid::AtMostOnce => (),
                     QosPid::AtLeastOnce(pid) => {
                         let d = Instant::now() + self.ack_delay;
-                        self.delayed_send
-                            .push(DelaySend::new(d, &self.addr, Msg::PktOut(puback(pid))));
+                        self.addr.send_at(d, Msg::PktOut(puback(pid)));
                     },
                     QosPid::ExactlyOnce(_) => panic!("ExactlyOnce not supported yet"),
                 }
@@ -271,8 +294,7 @@ impl Client {
                     codes.push(SubscribeReturnCodes::Success(qos));
                 }
                 let d = Instant::now() + self.ack_delay;
-                self.delayed_send
-                    .push(DelaySend::new(d, &self.addr, Msg::PktOut(suback(pid, codes))));
+                self.addr.send_at(d, Msg::PktOut(suback(pid, codes)));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -284,7 +306,6 @@ impl Client {
     /// Send packets to client.
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
-        self.delayed_send.retain(|d| !d.expired());
         self.dumps.dump(self.id, &self.name, "S", &pkt);
         self.writer.send(pkt)?;
         self.writer.flush().map_err(|e| e.into())
@@ -309,7 +330,7 @@ impl Client {
 
             // Schedule the next check for timedout acks.
             if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
-                self.qos1_check = Some(DelaySend::new(deadline, &self.addr, Msg::CheckQos));
+                self.qos1_check = Some(self.addr.send_at_cancel(deadline, Msg::CheckQos));
             }
         }
         self.handle_pkt_out(pkt)
@@ -346,7 +367,7 @@ impl Client {
                      }
                  });
         if let Some(deadline) = sess.qos1.values().map(|(d, _)| d).min() {
-            self.qos1_check = Some(DelaySend::new(*deadline, &self.addr, Msg::CheckQos));
+            self.qos1_check = Some(self.addr.send_at_cancel(*deadline, Msg::CheckQos));
         }
         Ok(())
     }
@@ -403,31 +424,5 @@ impl Drop for Client {
             let mut sm = self.sessions.lock().expect("lock sessions");
             sm.close(&self, sess);
         }
-    }
-}
-
-/// Handle to a spawned future that can be canceled by droping the handle.
-struct DelaySend(oneshot::Receiver<()>, Instant);
-impl DelaySend {
-    /// Send `Msg` to `Addr` at `Instant`.
-    // FIXME: It should be possible to reliably resolve the future as soon as the Receiver is
-    // dropped.
-    fn new(deadline: Instant, addr: &Addr, msg: Msg) -> Self {
-        trace!("DelaySend {:?} {:?} {:?}", deadline, addr, msg);
-        let addr = addr.clone();
-        let (s, r) = oneshot::channel();
-        // Wait until deadline, check for cancellation, and send the msg.
-        let fut = Delay::new(deadline).map(move |_| {
-                                          if !s.is_canceled() {
-                                              addr.send(msg)
-                                          }
-                                      });
-        // Spawn the future, ignoreing errors.
-        tokio::spawn(fut.map(drop).map_err(drop));
-        Self(r, deadline)
-    }
-    /// Check if deadline has been reached.
-    fn expired(&self) -> bool {
-        self.1 < Instant::now()
     }
 }
