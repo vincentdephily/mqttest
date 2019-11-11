@@ -73,6 +73,16 @@ struct Opt {
     /// Note that MQTT allows passwords to be binary but we only accept UTF-8.
     #[structopt(long = "userpass")]
     userpass: Option<String>,
+    /// Disconnect the client after receiving that many packets.
+    ///
+    /// This just closes the TCP stream, without sending an mqtt disconnect packet.
+    #[structopt(long = "max-pkt", value_name = "count", default_value = "1000000")]
+    max_pkt: usize,
+    /// Disconnect the client after that many milliseconds.
+    ///
+    /// This just closes the TCP stream, without sending an mqtt disconnect packet.
+    #[structopt(long = "max-time", value_name = "ms", default_value = "3600000")]
+    max_time: u64,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -112,7 +122,9 @@ fn main() {
                            .ack_delay(Duration::from_millis(opt.ack_delay))
                            .strict(opt.strict)
                            .idprefix(opt.idprefix)
-                           .userpass(opt.userpass))
+                           .userpass(opt.userpass)
+                           .max_pkt(opt.max_pkt)
+                           .max_time(Duration::from_millis(opt.max_time)))
     {
         Ok((_port, server)) => {
             tokio::run(server);

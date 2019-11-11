@@ -24,6 +24,8 @@ pub struct Conf {
     strict: bool,
     idprefix: String,
     userpass: Option<String>,
+    max_pkt: usize,
+    max_time: Duration,
 }
 impl Conf {
     pub fn new() -> Self {
@@ -33,7 +35,9 @@ impl Conf {
                ack_delay: Duration::from_secs(0),
                strict: false,
                idprefix: "".into(),
-               userpass: None }
+               userpass: None,
+               max_pkt: 1000000,
+               max_time: Duration::from_secs(3600) }
     }
     pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
         self.ports = ports;
@@ -61,6 +65,14 @@ impl Conf {
     }
     pub fn userpass(mut self, s: Option<String>) -> Self {
         self.userpass = s;
+        self
+    }
+    pub fn max_pkt(mut self, d: usize) -> Self {
+        self.max_pkt = d;
+        self
+    }
+    pub fn max_time(mut self, d: Duration) -> Self {
+        self.max_time = d;
         self
     }
 }

@@ -76,8 +76,9 @@ pub(crate) enum Msg {
     PktIn(Packet),
     PktOut(Packet),
     Publish(QoS, Publish),
-    Replaced(ConnId, oneshot::Sender<SessionData>),
     CheckQos,
+    Replaced(ConnId, oneshot::Sender<SessionData>),
+    Disconnect(String),
 }
 
 /// Session data. To be restored at connection, and kept up to date during connection.
@@ -147,6 +148,10 @@ pub(crate) struct Client {
     session: Option<SessionData>,
     /// Handle to future sending the next Msg::CheckQos.
     qos1_check: Option<oneshot::Receiver<()>>,
+    /// Disconnect after that many received packets.
+    max_pkt: usize,
+    /// Count received packets.
+    count_pkt: usize,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -176,7 +181,12 @@ impl Client {
                                   subs,
                                   sessions,
                                   session: None,
-                                  qos1_check: None };
+                                  qos1_check: None,
+                                  max_pkt: conf.max_pkt,
+                                  count_pkt: 0 };
+        // Setup disconnect timer.
+        client.addr.send_at(Instant::now() + conf.max_time,
+                            Msg::Disconnect(format!("max time {:?}", conf.max_time)));
         // Initialize json dump target.
         for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
             let s = s.replace("{c}", &format!("{}", id));
@@ -191,10 +201,11 @@ impl Client {
                             Msg::PktIn(p) => client.handle_pkt_in(p),
                             Msg::PktOut(p) => client.handle_pkt_out(p),
                             Msg::Publish(q, p) => client.handle_publish(q, p),
-                            Msg::Replaced(i, c) => client.handle_replaced(i, c),
                             Msg::CheckQos => client.handle_check_qos(Instant::now()),
+                            Msg::Replaced(i, c) => client.handle_replaced(i, c),
+                            Msg::Disconnect(r) => client.handle_disconnect(r),
                         }.map_err(move |e| {
-                             error!("C{}: msg: {}", id, e);
+                             error!("C{}: terminating: {}", id, e);
                          })
                     });
         // This future decodes MQTT packets and forwards them as `Msg`s.
@@ -218,6 +229,7 @@ impl Client {
     fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
         self.dumps.dump(self.id, &self.name, "C", &pkt);
+        self.count_pkt += 1;
         match (pkt, self.conn) {
             // Connection
             (Packet::Connect(c), false) => {
@@ -300,6 +312,9 @@ impl Client {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
             },
         }
+        if self.count_pkt >= self.max_pkt {
+            self.addr.send(Msg::Disconnect(format!("max packets {:?}", self.max_pkt)));
+        }
         Ok(())
     }
 
@@ -336,20 +351,6 @@ impl Client {
         self.handle_pkt_out(pkt)
     }
 
-    fn handle_replaced(&mut self,
-                       conn: ConnId,
-                       chan: oneshot::Sender<SessionData>)
-                       -> Result<(), Error> {
-        info!("C{}: replaced by connection {}", self.id, conn);
-        self.conn = false;
-        chan.send(self.session.take().unwrap()).unwrap_or_else(|_| {
-                                                   trace!("C{}: C{} didn't wait for the session",
-                                                          self.id,
-                                                          conn)
-                                               });
-        Err(Error::new(ErrorKind::ConnectionReset, "Replaced"))
-    }
-
     /// Go trhough self.session.qos1 and resend any timedout packets.
     fn handle_check_qos(&mut self, reftime: Instant) -> Result<(), Error> {
         let sess = self.session.as_mut().expect("unwrap session");
@@ -370,6 +371,26 @@ impl Client {
             self.qos1_check = Some(self.addr.send_at_cancel(*deadline, Msg::CheckQos));
         }
         Ok(())
+    }
+
+    fn handle_replaced(&mut self,
+                       conn: ConnId,
+                       chan: oneshot::Sender<SessionData>)
+                       -> Result<(), Error> {
+        info!("C{}: replaced by connection {}", self.id, conn);
+        self.conn = false;
+        chan.send(self.session.take().unwrap()).unwrap_or_else(|_| {
+                                                   trace!("C{}: C{} didn't wait for the session",
+                                                          self.id,
+                                                          conn)
+                                               });
+        Err(Error::new(ErrorKind::ConnectionReset, "Replaced"))
+    }
+
+    fn handle_disconnect(&mut self, reason: String) -> Result<(), Error> {
+        info!("C{}: Disconnect by server: {:?}", self.id, reason);
+        self.conn = false;
+        Err(Error::new(ErrorKind::ConnectionReset, reason))
     }
 
     /// Check client identifier.
