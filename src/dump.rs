@@ -75,8 +75,8 @@ impl DumpQosId {
 /// Parsed MQTT connack packet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpConnack {
-    session: bool,
-    code: String, //FIXME proper type
+    pub session: bool,
+    pub code: String, //FIXME proper type
 }
 
 /// Parsed MQTT publish packet.
