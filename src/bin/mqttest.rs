@@ -95,6 +95,15 @@ struct Opt {
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     #[structopt(long = "max-time", value_name = "ms", default_value = "-", use_delimiter = true)]
     max_time: Vec<OptDuration>,
+    /// How long to retain the session after disconnection.
+    ///
+    /// Use "-" to use the client-specified value: CONNECT.clean_session (MQTT3) or
+    /// CONNECT.session_expiry (MQTT5). Multiple values apply to subsequent connections.
+    #[structopt(long = "session-expire",
+                value_name = "ms",
+                default_value = "-",
+                use_delimiter = true)]
+    sess_expire: Vec<OptDuration>,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -129,7 +138,8 @@ fn main() {
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass)
                            .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
-                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect()))
+                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
+                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect()))
     {
         Ok((_port, server)) => {
             tokio::run(server);

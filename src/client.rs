@@ -1,4 +1,4 @@
-use crate::{dump::*, mqtt::*, pubsub::*, session::*, Conf};
+use crate::{dump::*, mqtt::*, pubsub::*, session::*, Conf, FOREVER};
 use futures::{sink::Wait,
               stream::Stream,
               sync::{mpsc::{unbounded, UnboundedSender},
@@ -15,9 +15,6 @@ use tokio::{codec::{FramedRead, FramedWrite},
             prelude::*,
             timer::Delay};
 
-
-/// Duration longer than program's lifetime (not quite `u64::MAX` so we can add `Instant::now()`).
-const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 
 /// Connection id for debug and indexing purposes.
 pub type ConnId = u64;
@@ -146,6 +143,8 @@ pub(crate) struct Client {
     sessions: Arc<Mutex<Sessions>>,
     /// Client session.
     session: Option<SessionData>,
+    /// Override session expiry time.
+    pub sess_expire: Option<Duration>,
     /// Handle to future sending the next Msg::CheckQos.
     qos1_check: Option<oneshot::Receiver<()>>,
     /// Disconnect after that many received packets.
@@ -167,6 +166,7 @@ impl Client {
         let (read, write) = socket.split();
         let (sx, rx) = unbounded::<Msg>();
         let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::u64::MAX);
+        let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
         let mut client = Client { id,
                                   name: String::from(""),
                                   addr: Addr(sx.clone(), id),
@@ -182,6 +182,7 @@ impl Client {
                                   subs,
                                   sessions,
                                   session: None,
+                                  sess_expire,
                                   qos1_check: None,
                                   max_pkt,
                                   count_pkt: 0 };

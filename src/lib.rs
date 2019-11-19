@@ -15,6 +15,11 @@ mod session;
 
 pub use dump::*;
 
+/// Duration longer than program's lifetime (not quite `u64::MAX` so we can add `Instant::now()`).
+const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+/// Zero Duration, to save on typing.
+const ASAP: Duration = Duration::from_secs(0);
+
 #[derive(Debug)]
 pub struct Conf {
     ports: RangeInclusive<u16>,
@@ -26,18 +31,23 @@ pub struct Conf {
     userpass: Option<String>,
     max_pkt: Vec<Option<u64>>,
     max_time: Vec<Option<Duration>>,
+    /// How long is the session retained after disconnection.
+    ///
+    /// If None, use client-specified behaviour (clean_session in MQTT3, session expiry in MQTT5).
+    sess_expire: Vec<Option<Duration>>,
 }
 impl Conf {
     pub fn new() -> Self {
         Conf { ports: 1883..=2000,
                dumps: vec![],
                ack_timeouts: (Some(Duration::from_secs(5)), None),
-               ack_delay: Duration::from_secs(0),
+               ack_delay: ASAP,
                strict: false,
                idprefix: "".into(),
                userpass: None,
                max_pkt: vec![None],
-               max_time: vec![None] }
+               max_time: vec![None],
+               sess_expire: vec![None] }
     }
     pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
         self.ports = ports;
@@ -73,6 +83,10 @@ impl Conf {
     }
     pub fn max_time(mut self, d: Vec<Option<Duration>>) -> Self {
         self.max_time = d;
+        self
+    }
+    pub fn sess_expire(mut self, e: Vec<Option<Duration>>) -> Self {
+        self.sess_expire = e;
         self
     }
 }

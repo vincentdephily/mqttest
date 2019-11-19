@@ -21,7 +21,7 @@
 //! them in an eventually-consistent db, or the client reboots into an old state).
 
 
-use crate::client::*;
+use crate::{client::*, ASAP, FOREVER};
 use futures::{future::Future, sync::oneshot};
 use log::*;
 use std::{collections::HashMap,
@@ -38,7 +38,8 @@ impl Sessions {
         // Load previous session from the store (if it exist and hasn't expired).
         let prev_session = self.0.remove(&client.name).map_or(None, |s| s.aquire(client));
         // Make the session point to the calling client.
-        self.0.insert(client.name.clone(), Session::new(client, clean_session));
+        self.0
+            .insert(client.name.clone(), Session::new(client, &client.sess_expire, clean_session));
         // Return the previous session (if it exist and hasn't expired and the client didn't opt
         // out), or a new one.
         match prev_session {
@@ -51,11 +52,12 @@ impl Sessions {
         match self.0.get(&client.name) {
             None => panic!("C{}: Closing non-existing session", client.id),
             Some(Session::Closed(_, _)) => panic!("C{}: Closing already-closed session", client.id),
-            Some(Session::Live(addr, secs)) => {
+            Some(Session::Live(addr, d)) => {
                 assert_eq!(*addr, client.addr, "C{}: closing another client's session", client.id);
-                if secs > &0 {
-                    debug!("C{}: close session {} {:?}, expire in {}s", client.id, client.name, session, *secs);
-                    let expire = Instant::now() + Duration::from_secs(*secs as u64);
+                if *d > ASAP {
+                    debug!("C{}: close session {} {:?}, expire in {:?}",
+                           client.id, client.name, session, *d);
+                    let expire = Instant::now() + *d;
                     self.0.insert(client.name.clone(), Session::Closed(session, expire));
                 } else {
                     debug!("C{}: remove session {}", client.id, client.name);
@@ -69,24 +71,28 @@ impl Sessions {
 /// Session expiration corresponds to !CONNECT.clean_session in MQTT3.1.1, and
 /// CONNECT.session_expiry in MQTT5.
 pub(crate) enum Session {
-    /// Session is currently owned by live client, and will expire that many seconds after closing.
-    Live(Addr, u32),
+    /// Session is currently owned by live client, and will expire some time after closing.
+    Live(Addr, Duration),
     /// Session is currently not used, and will expire at specified date.
     Closed(SessionData, Instant),
 }
 impl Session {
-    fn new(client: &Client, clean_session: bool) -> Self {
-        Self::Live(client.addr.clone(), if clean_session { 0 } else { std::u32::MAX })
+    fn new(client: &Client, expire: &Option<Duration>, clean_session: bool) -> Self {
+        Self::Live(client.addr.clone(), match expire {
+            None if clean_session => ASAP,
+            None => FOREVER,
+            Some(d) => *d,
+        })
     }
     /// Obtain the SessionData from the Session enum or from the live Client, and return it if it
     /// hasn't expired.
     fn aquire(self, client: &Client) -> Option<SessionData> {
         match self {
-            Self::Live(addr, secs) => {
-                debug!("C{}: aquiring session from C{} {}", client.id, addr.1, secs > 0);
+            Self::Live(addr, d) => {
+                debug!("C{}: aquiring session from C{} {:?}", client.id, addr.1, d);
                 let (snd, rcv) = oneshot::channel();
                 addr.send(Msg::Replaced(client.id, snd));
-                if secs > 0 {
+                if d > ASAP {
                     Some(rcv.wait().expect(""))
                 } else {
                     None
