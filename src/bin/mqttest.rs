@@ -17,7 +17,7 @@ impl std::str::FromStr for OptDuration {
 }
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "mqttest", global_settings = &[ColoredHelp, DeriveDisplayOrder, UnifiedHelpMessage])]
+#[structopt(name = "mqttest", help_message = "Prints help information. Use --help for more details.", global_settings = &[ColoredHelp, DeriveDisplayOrder, UnifiedHelpMessage])]
 struct Opt {
     /// Increase log level (info -> debug -> trace). Shorthand for "--log debug" or "--log trace".
     #[structopt(short = "v", parse(from_occurrences))]
@@ -33,7 +33,6 @@ struct Opt {
                 max_values = 2,
                 default_value = "1883-2000")]
     ports: Vec<u16>,
-    ///// Resend QoS1/2 packet during connection if ack takes too long.
     /// Resend packet during connection if ack takes longer than this.
     ///
     /// This only concerns resending during a live connection: resending at connection start (if
@@ -78,11 +77,12 @@ struct Opt {
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     #[structopt(long = "max-pkt", value_name = "count", default_value = "1000000")]
     max_pkt: usize,
-    /// Disconnect the client after that many milliseconds.
+    /// Disconnect the client after a certain time.
     ///
+    /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
-    #[structopt(long = "max-time", value_name = "ms", default_value = "3600000")]
-    max_time: u64,
+    #[structopt(long = "max-time", value_name = "ms", default_value = "-", use_delimiter = true)]
+    max_time: Vec<OptDuration>,
     //    /// Warn/Error if client reuses an MQTT id from the previous N packets.
     //    #[structopt(long = "oldid",
     //                value_name = "W/E",
@@ -91,13 +91,6 @@ struct Opt {
     //                max_values = 2,
     //                default_value = "10/1")]
     //    oldid: Vec<usize>,
-    //    /// Wait before acking
-    //    #[structopt(long = "ackdelay",
-    //                value_name = "ms",
-    //                use_delimiter = true,
-    //                default_value = "0",
-    //                parse(try_from_str = "from_ms"))]
-    //    ackdelay: Vec<Duration>,
     //    /// Send more acks than expected
     //    #[structopt(long = "ackdup", value_name = "N", use_delimiter = true, default_value = "0")]
     //    ackduplicate: Vec<usize>,
@@ -124,7 +117,7 @@ fn main() {
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass)
                            .max_pkt(opt.max_pkt)
-                           .max_time(Duration::from_millis(opt.max_time)))
+                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect()))
     {
         Ok((_port, server)) => {
             tokio::run(server);

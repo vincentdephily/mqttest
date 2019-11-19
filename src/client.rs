@@ -185,8 +185,9 @@ impl Client {
                                   max_pkt: conf.max_pkt,
                                   count_pkt: 0 };
         // Setup disconnect timer.
-        client.addr.send_at(Instant::now() + conf.max_time,
-                            Msg::Disconnect(format!("max time {:?}", conf.max_time)));
+        if let Some(m) = conf.max_time[id as usize % conf.max_time.len()] {
+            client.addr.send_at(Instant::now() + m, Msg::Disconnect(format!("max time {:?}", m)))
+        }
         // Initialize json dump target.
         for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
             let s = s.replace("{c}", &format!("{}", id));

@@ -25,7 +25,7 @@ pub struct Conf {
     idprefix: String,
     userpass: Option<String>,
     max_pkt: usize,
-    max_time: Duration,
+    max_time: Vec<Option<Duration>>,
 }
 impl Conf {
     pub fn new() -> Self {
@@ -37,7 +37,7 @@ impl Conf {
                idprefix: "".into(),
                userpass: None,
                max_pkt: 1000000,
-               max_time: Duration::from_secs(3600) }
+               max_time: vec![None] }
     }
     pub fn ports(mut self, ports: RangeInclusive<u16>) -> Self {
         self.ports = ports;
@@ -71,7 +71,7 @@ impl Conf {
         self.max_pkt = d;
         self
     }
-    pub fn max_time(mut self, d: Duration) -> Self {
+    pub fn max_time(mut self, d: Vec<Option<Duration>>) -> Self {
         self.max_time = d;
         self
     }
