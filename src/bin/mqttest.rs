@@ -10,8 +10,19 @@ impl std::str::FromStr for OptDuration {
     type Err = std::num::ParseIntError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &s[0..1] {
-            "-" => Ok(OptDuration(None)),
-            _ => Ok(OptDuration(Some(Duration::from_millis(s.parse()?)))),
+            "-" => Ok(Self(None)),
+            _ => Ok(Self(Some(Duration::from_millis(s.parse()?)))),
+        }
+    }
+}
+#[derive(Debug)]
+struct OptU64(Option<u64>);
+impl std::str::FromStr for OptU64 {
+    type Err = std::num::ParseIntError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &s[0..1] {
+            "-" => Ok(Self(None)),
+            _ => Ok(Self(Some(s.parse()?))),
         }
     }
 }
@@ -74,9 +85,10 @@ struct Opt {
     userpass: Option<String>,
     /// Disconnect the client after receiving that many packets.
     ///
+    /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
-    #[structopt(long = "max-pkt", value_name = "count", default_value = "1000000")]
-    max_pkt: usize,
+    #[structopt(long = "max-pkt", value_name = "count", default_value = "-", use_delimiter = true)]
+    max_pkt: Vec<OptU64>,
     /// Disconnect the client after a certain time.
     ///
     /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
@@ -116,7 +128,7 @@ fn main() {
                            .strict(opt.strict)
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass)
-                           .max_pkt(opt.max_pkt)
+                           .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
                            .max_time(opt.max_time.into_iter().map(|d| d.0).collect()))
     {
         Ok((_port, server)) => {

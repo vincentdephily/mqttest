@@ -149,9 +149,9 @@ pub(crate) struct Client {
     /// Handle to future sending the next Msg::CheckQos.
     qos1_check: Option<oneshot::Receiver<()>>,
     /// Disconnect after that many received packets.
-    max_pkt: usize,
+    max_pkt: u64,
     /// Count received packets.
-    count_pkt: usize,
+    count_pkt: u64,
 }
 impl Client {
     /// Initializes a new `Client` and moves it into a `Future` that'll handle the whole
@@ -166,6 +166,7 @@ impl Client {
         info!("C{}: Connection from {:?}", id, socket);
         let (read, write) = socket.split();
         let (sx, rx) = unbounded::<Msg>();
+        let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::u64::MAX);
         let mut client = Client { id,
                                   name: String::from(""),
                                   addr: Addr(sx.clone(), id),
@@ -182,7 +183,7 @@ impl Client {
                                   sessions,
                                   session: None,
                                   qos1_check: None,
-                                  max_pkt: conf.max_pkt,
+                                  max_pkt,
                                   count_pkt: 0 };
         // Setup disconnect timer.
         if let Some(m) = conf.max_time[id as usize % conf.max_time.len()] {
