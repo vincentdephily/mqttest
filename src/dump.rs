@@ -85,9 +85,11 @@ pub struct DumpPublish {
     pub dup: bool,
     pub qos: DumpQosId,
     pub topic: String,
-    /// The payload as a string, if it is valid utf-8
+    /// Length (in bytes) of the publish payload.
+    pub len: usize,
+    /// The payload as a string, if it is valid utf-8.
     pub utf8: Option<String>,
-    /// The payload as an array of bytes
+    /// The payload as an array of bytes.
     pub bytes: Vec<u8>,
 }
 
@@ -178,6 +180,7 @@ impl From<&Packet> for DumpMqtt {
                 Self::Publish(DumpPublish { dup: p.dup,
                                             qos: DumpQosId::from(p.qospid),
                                             topic: p.topic_name.clone(),
+                                            len: p.payload.len(),
                                             utf8: String::from_utf8(p.payload.clone()).ok(),
                                             bytes: p.payload.clone() })
             },
