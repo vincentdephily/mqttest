@@ -1,10 +1,15 @@
 [package]
 name = "mqttest"
 version = "0.1.0"
-authors = ["Vincent de Phily <vincent.dephily@mobile-devices.fr>"]
+authors = ["Vincent de Phily <moltonel@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "An MQTT server designed for unittesting MQTT clients."
+keywords = ["mqtt", "server", "test", "unittest"]
+categories = ["development-tools.categories.testing", "network-programming"]
+readme = "README.md"
+license = "Apache-2.0"
+homepage = "https://github.com/vincentdephily/mqttest"
+repository = "https://github.com/vincentdephily/mqttest"
 
 [dependencies]
 bytes = "0.4.12"
@@ -21,4 +26,3 @@ tokio = "0.1.22"
 structopt = "0.3.1"
 env_logger = "0.7.0"
 rand = "0.7.2"
-
