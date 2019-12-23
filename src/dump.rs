@@ -3,7 +3,7 @@ use futures::{stream::Stream,
               sync::mpsc::{unbounded, UnboundedSender}};
 use log::*;
 use serde::{Deserialize, Serialize};
-use serde_json::to_string;
+use serde_json::{from_slice, to_string, Value};
 use std::{collections::HashMap,
           fs::OpenOptions,
           io::Error,
@@ -12,7 +12,6 @@ use tokio::io::Write;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpMeta<'a> {
-    //#[serde(serialize_with = "ser_time", deserialize_with = "de_time")]
     /// Timestamp formated as a string, fixed-size, iso-8601, UTC
     pub ts: String,
     /// Connection id/counter
@@ -24,17 +23,6 @@ pub struct DumpMeta<'a> {
     /// Parsed MQTT packet
     pub pkt: DumpMqtt,
 }
-//fn ser_time<S>(tm: &Tm, s: S) -> Result<S::Ok, S::Error>
-//    where S: Serializer
-//{
-//    s.serialize_str(&format!("{}.{:09.09}Z", tm.strftime("%FT%T").unwrap(), tm.tm_nsec))
-//}
-//fn de_time<'de, D>(d: D) -> Result<Tm, D::Error>
-//    where D: Deserializer<'de>
-//{
-//    let s = String::deserialize(d)?;
-//    time::strptime(&s, "%FT%T.").map_err(serde::de::Error::custom)
-//}
 
 pub type DumpPid = u16;
 
@@ -85,12 +73,27 @@ pub struct DumpPublish {
     pub dup: bool,
     pub qos: DumpQosId,
     pub topic: String,
+    pub pl: DumpPayload,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DumpPayload {
     /// Length (in bytes) of the publish payload.
     pub len: usize,
+    /// The payload as an array of bytes.
+    pub raw: Vec<u8>,
     /// The payload as a string, if it is valid utf-8.
     pub utf8: Option<String>,
-    /// The payload as an array of bytes.
-    pub bytes: Vec<u8>,
+    /// The payload as a json value, if it is valid json.
+    pub json: Option<Value>,
+}
+impl DumpPayload {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self { len: bytes.len(),
+               utf8: String::from_utf8(bytes.clone()).ok(),
+               json: from_slice(&bytes).ok(),
+               raw: bytes }
+    }
 }
 
 /// Parsed MQTT subscribe packet.
@@ -168,22 +171,16 @@ impl DumpMqtt {
             Self::Disconnect => "disco",
         }
     }
-}
-impl From<&Packet> for DumpMqtt {
-    fn from(p: &Packet) -> Self {
+    fn new(p: &Packet) -> Self {
         match p {
             Packet::Connect(p) => Self::Connect(p.client_id.clone()),
-            Packet::Connack(p) => {
-                Self::Connack(DumpConnack { session: p.session_present, code: format!("{:?}",p.code) })
-            },
-            Packet::Publish(p) => {
-                Self::Publish(DumpPublish { dup: p.dup,
-                                            qos: DumpQosId::from(p.qospid),
-                                            topic: p.topic_name.clone(),
-                                            len: p.payload.len(),
-                                            utf8: String::from_utf8(p.payload.clone()).ok(),
-                                            bytes: p.payload.clone() })
-            },
+            Packet::Connack(p) => Self::Connack(DumpConnack { session: p.session_present,
+                                                              code: format!("{:?}", p.code) }),
+            Packet::Publish(p) => Self::Publish(DumpPublish { dup: p.dup,
+                                                              qos: DumpQosId::from(p.qospid),
+                                                              topic: p.topic_name.clone(),
+                                                              pl: DumpPayload::new(p.payload
+                                                                                    .clone()) }),
             Packet::Puback(p) => Self::Puback(p.get()),
             Packet::Pubrec(p) => Self::Pubrec(p.get()),
             Packet::Pubrel(p) => Self::Pubrel(p.get()),
@@ -277,7 +274,7 @@ impl Dump {
                                       con: conid,
                                       id: clientid,
                                       from: dir,
-                                      pkt: DumpMqtt::from(pkt) }).unwrap();
+                                      pkt: DumpMqtt::new(pkt) }).unwrap();
         for c in self.chans.iter() {
             c.unbounded_send(e.clone()).unwrap();
         }
