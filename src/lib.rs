@@ -26,6 +26,7 @@ pub struct Conf {
     ack_timeouts: (Option<Duration>, Option<Duration>),
     ack_delay: Duration,
     dumps: Vec<String>,
+    dump_decode: Option<String>,
     strict: bool,
     idprefix: String,
     userpass: Option<String>,
@@ -40,6 +41,7 @@ impl Conf {
     pub fn new() -> Self {
         Conf { ports: 1883..=2000,
                dumps: vec![],
+               dump_decode: None,
                ack_timeouts: (Some(Duration::from_secs(5)), None),
                ack_delay: ASAP,
                strict: false,
@@ -55,6 +57,10 @@ impl Conf {
     }
     pub fn dumpfiles(mut self, v: Vec<String>) -> Self {
         self.dumps.extend(v);
+        self
+    }
+    pub fn dump_decode(mut self, s: Option<String>) -> Self {
+        self.dump_decode = s;
         self
     }
     pub fn ack_timeouts(mut self, mqtt3: Option<Duration>, mqtt5: Option<Duration>) -> Self {
@@ -108,7 +114,7 @@ pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Er
     info!("Listening on {:?}", port);
     let subs = Arc::new(RwLock::new(Subs::new()));
     let sess = Arc::new(Mutex::new(Sessions::new()));
-    let dumps = Dump::new();
+    let dumps = Dump::new(&conf.dump_decode);
     let mut id = 0;
     let f = listener.incoming()
                     .map_err(|e| error!("Failed to accept socket: {:?}", e))

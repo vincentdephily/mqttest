@@ -1,4 +1,5 @@
-use crate::{client::ConnId, mqtt::*};
+use crate::{client::ConnId,
+            mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes}};
 use futures::{stream::Stream,
               sync::mpsc::{unbounded, UnboundedSender}};
 use log::*;
@@ -7,6 +8,7 @@ use serde_json::{from_slice, to_string, Value};
 use std::{collections::HashMap,
           fs::OpenOptions,
           io::Error,
+          process::{Command, Stdio},
           sync::{Arc, Mutex}};
 use tokio::io::Write;
 
@@ -80,19 +82,52 @@ pub struct DumpPublish {
 pub struct DumpPayload {
     /// Length (in bytes) of the publish payload.
     pub len: usize,
-    /// The payload as an array of bytes.
+    /// The original payload as an array of bytes.
     pub raw: Vec<u8>,
-    /// The payload as a string, if it is valid utf-8.
+    /// The decoded payload as a string, if it is valid utf-8.
     pub utf8: Option<String>,
-    /// The payload as a json value, if it is valid json.
+    /// The decoded payload as a json value, if it is valid json.
     pub json: Option<Value>,
+    /// Error message from the external decoder, if decoding failed.
+    pub err: Option<String>,
 }
 impl DumpPayload {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self { len: bytes.len(),
-               utf8: String::from_utf8(bytes.clone()).ok(),
-               json: from_slice(&bytes).ok(),
-               raw: bytes }
+    fn new(raw: Vec<u8>, decoder: &Option<String>) -> Self {
+        let len = raw.len();
+        let dec = match decoder {
+            None => Ok(raw.clone()),
+            Some(d) => spawn_cmd(&raw, d),
+        };
+        match dec {
+            Ok(d) => {
+                let utf8 = String::from_utf8(d.clone()).ok();
+                let json = from_slice(&d).ok();
+                Self { len, raw, utf8, json, err: None }
+            },
+            Err(e) => Self { len, raw, utf8: None, json: None, err: Some(e) },
+        }
+    }
+}
+
+/// Run an external command, writing to its stdin and reading from its stdout. Returns an error if
+/// the exit status isn't sucessful, stderr isn't empty, or some other error occurs.
+// FIXME: Timeout execution.
+fn spawn_cmd(raw: &Vec<u8>, cmd: &String) -> Result<Vec<u8>, String> {
+    let mut child = Command::new(cmd).stdin(Stdio::piped())
+                                     .stdout(Stdio::piped())
+                                     .stderr(Stdio::piped())
+                                     .spawn()
+                                     .map_err(|e| format!("Couldn't start {}: {:?}", cmd, e))?;
+    child.stdin
+         .take()
+         .unwrap()
+         .write_all(raw)
+         .map_err(|e| format!("Couldn't write to {}'s stdin: {:?}", cmd, e))?;
+
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() && out.stderr.is_empty() => Ok(out.stdout),
+        Ok(out) if !out.stderr.is_empty() => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+        e => Err(format!("unexpected return from {}: {:?}", cmd, e)),
     }
 }
 
@@ -171,16 +206,17 @@ impl DumpMqtt {
             Self::Disconnect => "disco",
         }
     }
-    fn new(p: &Packet) -> Self {
+    fn new(p: &Packet, decode_cmd: &Option<String>) -> Self {
         match p {
             Packet::Connect(p) => Self::Connect(p.client_id.clone()),
             Packet::Connack(p) => Self::Connack(DumpConnack { session: p.session_present,
                                                               code: format!("{:?}", p.code) }),
-            Packet::Publish(p) => Self::Publish(DumpPublish { dup: p.dup,
-                                                              qos: DumpQosId::from(p.qospid),
-                                                              topic: p.topic_name.clone(),
-                                                              pl: DumpPayload::new(p.payload
-                                                                                    .clone()) }),
+            Packet::Publish(p) => {
+                Self::Publish(DumpPublish { dup: p.dup,
+                                            qos: DumpQosId::from(p.qospid),
+                                            topic: p.topic_name.clone(),
+                                            pl: DumpPayload::new(p.payload.clone(), &decode_cmd) })
+            },
             Packet::Puback(p) => Self::Puback(p.get()),
             Packet::Pubrec(p) => Self::Pubrec(p.get()),
             Packet::Pubrel(p) => Self::Pubrel(p.get()),
@@ -232,10 +268,13 @@ impl DumpMqtt {
 pub(crate) struct Dump {
     reg: Arc<Mutex<HashMap<String, UnboundedSender<String>>>>,
     chans: Vec<UnboundedSender<String>>,
+    decode_cmd: Option<String>,
 }
 impl Dump {
-    pub fn new() -> Self {
-        Dump { reg: Arc::new(Mutex::new(HashMap::new())), chans: vec![] }
+    pub fn new(decode_cmd: &Option<String>) -> Self {
+        Dump { reg: Arc::new(Mutex::new(HashMap::new())),
+               chans: vec![],
+               decode_cmd: decode_cmd.clone() }
     }
 
     /// Register a new file to send dumps to. This spawns an async writer for each file, and makes
@@ -269,12 +308,13 @@ impl Dump {
     }
 
     /// Serialize packet/metadata as json and asynchronously write it to the files.
-    pub fn dump(&self, conid: ConnId, clientid: &str, dir: &'static str, pkt: &Packet) {
-        let e = to_string(&DumpMeta { ts: Dump::now_str(),
-                                      con: conid,
-                                      id: clientid,
-                                      from: dir,
-                                      pkt: DumpMqtt::new(pkt) }).unwrap();
+    pub fn dump(&self, con: ConnId, id: &str, from: &'static str, pkt: &Packet) {
+        // Build DumpMqtt struct
+        let ts = Dump::now_str();
+        let pkt = DumpMqtt::new(pkt, &self.decode_cmd);
+        let e = to_string(&DumpMeta { ts, con, id, from, pkt }).unwrap();
+
+        // Send it to all writers
         for c in self.chans.iter() {
             c.unbounded_send(e.clone()).unwrap();
         }

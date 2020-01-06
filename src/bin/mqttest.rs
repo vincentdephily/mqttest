@@ -69,6 +69,13 @@ struct Opt {
     /// rust lib.
     #[structopt(long = "dump", value_name = "DUMP")]
     dumps: Vec<String>,
+    /// Decode command for publish payload.
+    ///
+    /// The argument should be a command that reads raw payload from stdin, and writes the
+    /// corresponding utf8/json to stdout. If decoding fails, it should output diagnostics to stderr
+    /// and exit with a non-zero value.
+    #[structopt(long = "dump-decode", value_name = "CMD")]
+    dump_decode: Option<String>,
     /// Be stricter about optional behaviours.
     ///
     /// [MQTT-3.1.3-5]: Reject client_ids longer than 23 chars or not matching [0-9a-zA-Z].
@@ -131,6 +138,7 @@ fn main() {
     trace!("Cli {:?}", opt);
     match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
                            .dumpfiles(opt.dumps)
+                           .dump_decode(opt.dump_decode)
                            .ack_timeouts(opt.ack_timeouts[0].0,
                                          opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
                            .ack_delay(Duration::from_millis(opt.ack_delay))
