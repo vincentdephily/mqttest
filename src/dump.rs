@@ -303,8 +303,8 @@ impl Dump {
     }
 
     fn now_str() -> String {
-        let t = time::now_utc();
-        format!("{}.{:09.09}Z", t.strftime("%FT%T").unwrap(), t.tm_nsec)
+        let t = time::OffsetDateTime::now();
+        format!("{}.{:06.06}Z", t.format("%FT%T"), t.microsecond())
     }
 
     /// Serialize packet/metadata as json and asynchronously write it to the files.

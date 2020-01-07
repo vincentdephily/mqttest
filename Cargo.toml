@@ -18,7 +18,7 @@ log = "0.4.7"
 mqttrs = "0.2.0"
 serde =  { version = "1.0.99", features = ["derive"] }
 serde_json = "1.0.40"
-time = "0.1.42"
+time = "0.2.1"
 tokio = "0.1.22"
 
 #[[bin]]
