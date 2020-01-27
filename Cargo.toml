@@ -12,14 +12,16 @@ homepage = "https://github.com/vincentdephily/mqttest"
 repository = "https://github.com/vincentdephily/mqttest"
 
 [dependencies]
-bytes = "0.4.12"
-futures = "0.1.28"
+bytes = "0.5.3"
+futures = "0.3.1"
 log = "0.4.7"
-mqttrs = "0.2.0"
+#mqttrs = "0.2.0"
+mqttrs = { git = "https://github.com/vincentdephily/mqttrs", rev = "7c77d351d0da473935308e7e143ea7a544831440" }
 serde =  { version = "1.0.99", features = ["derive"] }
 serde_json = "1.0.40"
 time = "0.2.1"
-tokio = "0.1.22"
+tokio = { version = "0.2.6", features = ["full"] }
+tokio-util = { version = "0.2.0", features = ["codec"] }
 
 #[[bin]]
 #required-features = ["cli"]

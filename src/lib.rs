@@ -1,11 +1,11 @@
 use crate::{client::*, dump::*, pubsub::*, session::*};
-use futures::{stream::Stream, Future};
+use futures::{executor::block_on, prelude::*};
 use log::*;
 use std::{io::{Error, ErrorKind},
           ops::RangeInclusive,
           sync::{Arc, Mutex, RwLock},
           time::Duration};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, prelude::*};
 
 mod client;
 mod dump;
@@ -99,7 +99,7 @@ impl Conf {
 
 fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
     for p in ports.clone().into_iter() {
-        match TcpListener::bind(&format!("127.0.0.1:{}", p).parse().unwrap()) {
+        match block_on(TcpListener::bind(&format!("127.0.0.1:{}", p))) {
             Ok(l) => return Ok((p, l)),
             Err(e) => trace!("Listen on 127.0.0.1:{}: {}", p, e),
         }
@@ -108,7 +108,7 @@ fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
     Err(Error::new(ErrorKind::Other, s))
 }
 
-pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
+pub fn start(conf: Conf) -> Result<(u16, impl Future<Output = ()>), Error> {
     debug!("Start {:?}", conf);
     let (port, listener) = listen(&conf.ports)?;
     info!("Listening on {:?}", port);
@@ -117,16 +117,21 @@ pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Er
     let dumps = Dump::new(&conf.dump_decode);
     let mut id = 0;
     let f = listener.incoming()
-                    .map_err(|e| error!("Failed to accept socket: {:?}", e))
-                    .for_each(move |socket| {
-                        tokio::spawn(Client::init(id,
-                                                  socket,
-                                                  subs.clone(),
-                                                  sess.clone(),
-                                                  dumps.clone(),
-                                                  &conf));
-                        id += 1;
-                        Ok(())
+                    //.map_err(|e| error!("Failed to accept socket: {:?}", e))
+                    .for_each(move |s| {
+                        match s {
+                            Ok(socket) => {
+                                tokio::spawn(Client::init(id,
+                                                          socket,
+                                                          subs.clone(),
+                                                          sess.clone(),
+                                                          dumps.clone(),
+                                                          &conf));
+                                id += 1;
+                            },
+                            Err(e) => error!("Failed to accept socket: {:?}", e),
+                        };
+                        future::ready(())
                     });
     Ok((port, f)) //FIXME: Include a cancellation handle.
 }

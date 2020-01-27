@@ -1,31 +1,34 @@
 use crate::{dump::*, mqtt::*, pubsub::*, session::*, Conf, FOREVER};
-use futures::{sink::Wait,
-              stream::Stream,
-              sync::{mpsc::{unbounded, UnboundedSender},
-                     oneshot}};
+use futures::{executor::block_on, prelude::*};
 use log::*;
 use rand::{seq::SliceRandom, thread_rng};
 use std::{collections::HashMap,
           io::{Error, ErrorKind},
           sync::{Arc, Mutex, RwLock},
           time::{Duration, Instant}};
-use tokio::{codec::{FramedRead, FramedWrite},
-            io::WriteHalf,
+use tokio::{io::WriteHalf,
             net::TcpStream,
             prelude::*,
-            timer::Delay};
+            sync::{mpsc::{channel, Sender},
+                   oneshot},
+            time::Delay};
+use tokio_util::codec::{FramedRead, FramedWrite};
 
 
 /// Connection id for debug and indexing purposes.
 pub type ConnId = u64;
 
+fn delay(deadline: Instant) -> Delay {
+    tokio::time::delay_until(tokio::time::Instant::from_std(deadline))
+}
+
 /// Allows sending a `Msg` to a `Client`.
 #[derive(Clone)]
-pub struct Addr(UnboundedSender<Msg>, pub(crate) ConnId);
+pub struct Addr(Sender<Msg>, pub(crate) ConnId);
 impl Addr {
     /// Send `Msg` to `Addr`.
     pub(crate) fn send(&self, msg: Msg) {
-        if let Err(e) = self.0.unbounded_send(msg) {
+        if let Err(e) = block_on(self.0.send(msg)) {
             warn!("Trying to send to disconnected Addr {:?}", e);
         }
     }
@@ -34,9 +37,9 @@ impl Addr {
         trace!("send_at n{:?} {:?} {:?}", deadline, self, msg);
         let addr = self.clone();
         // Wait until deadline, and send the msg.
-        let fut = Delay::new(deadline).map(move |_| addr.send(msg));
+        let fut = delay(deadline).map(move |_| addr.send(msg));
         // Spawn the future, ignoring errors.
-        tokio::spawn(fut.map(drop).map_err(drop));
+        tokio::spawn(fut.map(drop));
     }
     /// Send `Msg` to `Addr` at `Instant`. Returns a handle that will cancel sending if dropped.
     // FIXME: It should be possible to reliably resolve the future as soon as the Receiver is
@@ -46,13 +49,13 @@ impl Addr {
         let addr = self.clone();
         let (s, r) = oneshot::channel();
         // Wait until deadline, check for cancellation, and send the msg.
-        let fut = Delay::new(deadline).map(move |_| {
-                                          if !s.is_canceled() {
-                                              addr.send(msg)
-                                          }
-                                      });
+        let fut = delay(deadline).map(move |_| {
+                                     if !s.is_closed() {
+                                         addr.send(msg)
+                                     }
+                                 });
         // Spawn the future, ignoring errors.
-        tokio::spawn(fut.map(drop).map_err(drop));
+        tokio::spawn(fut.map(drop));
         r
     }
 }
@@ -121,7 +124,7 @@ pub(crate) struct Client {
     conn: bool,
     /// Write `Packet`s there, they'll get encoded and sent over the TcpStream.
     //  FIXME switch to async writes,
-    writer: Wait<FramedWrite<WriteHalf<TcpStream>, Codec>>,
+    writer: FramedWrite<WriteHalf<TcpStream>, Codec>,
     /// Dump targets.
     dumps: Dump,
     /// Protocol-specific ack-timeout config.
@@ -161,21 +164,22 @@ impl Client {
                 sessions: Arc<Mutex<Sessions>>,
                 dumps: Dump,
                 conf: &Conf)
-                -> impl Future<Item = (), Error = ()> {
+                -> impl Future<Output = ()> {
         info!("C{}: Connection from {:?}", id, socket);
         let (read, write) = socket.split();
-        let (sx, rx) = unbounded::<Msg>();
+        let (sx, rx) = channel::<Msg>(10);
         let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::u64::MAX);
         let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
         let mut client = Client { id,
                                   name: String::from(""),
                                   addr: Addr(sx.clone(), id),
                                   conn: false,
-                                  writer: FramedWrite::new(write, Codec(id)).wait(),
+                                  writer: FramedWrite::new(write, Codec(id)),
                                   dumps,
                                   ack_timeouts_conf: conf.ack_timeouts,
                                   ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
                                   ack_delay: conf.ack_delay,
+                                  //pid_strategy: PidStrategy::Rand,
                                   strict: conf.strict,
                                   idprefix: conf.idprefix.clone(),
                                   userpass: conf.userpass.clone(),
@@ -209,17 +213,20 @@ impl Client {
                             Msg::Disconnect(r) => client.handle_disconnect(r),
                         }.map_err(move |e| {
                              error!("C{}: terminating: {}", id, e);
-                         })
+                         });
+                        future::ready(())
                     });
         // This future decodes MQTT packets and forwards them as `Msg`s.
         let fr = FramedRead::new(read, Codec(id));
-        let pkt = fr.map_err(move |e| {
-                        error!("C{}: invalid packet: {}", id, e);
-                    })
-                    .for_each(move |pktin| {
-                        sx.unbounded_send(Msg::PktIn(pktin))
-                          .expect("Client sending to itself, channel should exist");
-                        Ok(())
+        let pkt = fr.for_each(move |p| {
+                        match p {
+                            Ok(pktin) => {
+                                block_on(sx.send(Msg::PktIn(pktin)))
+                              .expect("Client sending to itself, channel should exist");
+                            },
+                            Err(e) => error!("C{}: invalid packet: {}", id, e),
+                        };
+                        future::ready(())
                     });
         // Resolve this future (aka drop this `Client`) when either the TcpStream or the
         // Receiver<Msg> is closed.
@@ -324,9 +331,10 @@ impl Client {
     /// Send packets to client.
     fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
+        //self.delayed_send.retain(|d| !d.expired());
         self.dumps.dump(self.id, &self.name, "S", &pkt);
-        self.writer.send(pkt)?;
-        self.writer.flush().map_err(|e| e.into())
+        block_on(self.writer.send(pkt));
+        block_on(self.writer.flush()).map_err(|e| e.into())
     }
 
     fn handle_publish(&mut self, qos: QoS, p: Publish) -> Result<(), Error> {

@@ -22,10 +22,11 @@
 
 
 use crate::{client::*, ASAP, FOREVER};
-use futures::{future::Future, sync::oneshot};
+use futures::{executor::block_on, prelude::*};
 use log::*;
 use std::{collections::HashMap,
           time::{Duration, Instant}};
+use tokio::sync::oneshot;
 
 pub(crate) struct Sessions(HashMap<String, Session>);
 impl Sessions {
@@ -93,7 +94,7 @@ impl Session {
                 let (snd, rcv) = oneshot::channel();
                 addr.send(Msg::Replaced(client.id, snd));
                 if d > ASAP {
-                    Some(rcv.wait().expect(""))
+                    Some(block_on(rcv).expect(""))
                 } else {
                     None
                 }
