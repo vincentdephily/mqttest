@@ -1,6 +1,6 @@
 # MQTT test server
 
-Mqttest is an [MQTT](http://mqtt.org/) server designed for unittesting clients.
+Mqttest is an [MQTT](https://mqtt.org/) server designed for unittesting clients.
 
 Compared to a standard server like Mosquitto, Mqttest brings a CI-friendly binary, fast RC-free
 tests, detailed machine-readable logs, network problem simulations, selectable implementaion quirks,
@@ -11,8 +11,7 @@ Initial development has been sponsored by [Munic](https://munic.io/).
 ## Current and planned features
 
 - Simplified CI image
-  - [x] No runtime deps
-  - [x] Statically-built CLI binary
+  - [x] Statically-built standalone CLI binary (no runtime deps or fancy install)
   - [x] Use as a rust library
     - [x] Decode dump to rust structs
     - [x] Configure and start server
@@ -31,15 +30,15 @@ Initial development has been sponsored by [Munic](https://munic.io/).
   - [ ] Bad packet flow (spurious/missing ack/publish)
   - [x] Override session lifetime
   - [x] Reject clients by id or password
-  - [ ] Different pid-assignment startegies
+  - [ ] Different pid-assignment strategies
   - [ ] Your useful behavior here
   - [x] Different behavior for subsequent connections
+  - [x] Stop server after a number of connections
 - Protocol support
   - [x] MQTT 3.1.1
   - [ ] MQTT 5
-  - Warn about or reject use of optional protocol features:
-    - [x] Extended client identifiers
-    - [x] MQTT3 idioms obsoletted by MQTT5
+  - [x] Warn about or reject extended client identifiers
+  - [x] Warn about MQTT3 idioms obsoletted by MQTT5
   - [x] Documentation highlights MQTT implementation gotchas
 
 ## Non-features
@@ -51,7 +50,7 @@ Initial development has been sponsored by [Munic](https://munic.io/).
 
 ## Usage
 
-Install [Rust](http://rust-lang.org/) if necessary.
+Install [Rust](https://rust-lang.org/) if necessary.
 
 ### Standalone
 
