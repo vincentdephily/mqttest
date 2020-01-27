@@ -90,6 +90,9 @@ struct Opt {
     /// Note that MQTT allows passwords to be binary but we only accept UTF-8.
     #[structopt(long = "userpass")]
     userpass: Option<String>,
+    /// Only accept up to N connections, and stop the server afterwards.
+    #[structopt(long = "max-connect", short = "c", value_name = "count", default_value = "-")]
+    max_connect: OptU64,
     /// Disconnect the client after receiving that many packets.
     ///
     /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
@@ -145,6 +148,7 @@ fn main() {
                            .strict(opt.strict)
                            .idprefix(opt.idprefix)
                            .userpass(opt.userpass)
+                           .max_connect(opt.max_connect.0)
                            .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
                            .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
                            .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect()))
