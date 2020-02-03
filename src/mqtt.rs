@@ -4,7 +4,7 @@ use crate::ConnId;
 use bytes::BytesMut;
 use log::*;
 pub use mqttrs::*;
-use tokio::codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 /// Decode network bytes into an MQTT packet.
 /// The tokio FramedRead API calls this to determine the bounds of a full packet.

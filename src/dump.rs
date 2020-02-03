@@ -1,16 +1,15 @@
 use crate::{client::ConnId,
             mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes}};
-use futures::{stream::Stream,
-              sync::mpsc::{unbounded, UnboundedSender}};
+use futures::prelude::*;
 use log::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, to_string, Value};
 use std::{collections::HashMap,
           fs::OpenOptions,
-          io::Error,
+          io::{Error, Write},
           process::{Command, Stdio},
           sync::{Arc, Mutex}};
-use tokio::io::Write;
+use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpMeta<'a> {
@@ -266,8 +265,8 @@ impl DumpMqtt {
 // TODO: support de-registering files.
 #[derive(Clone)]
 pub(crate) struct Dump {
-    reg: Arc<Mutex<HashMap<String, UnboundedSender<String>>>>,
-    chans: Vec<UnboundedSender<String>>,
+    reg: Arc<Mutex<HashMap<String, Sender<String>>>>,
+    chans: Vec<Sender<String>>,
     decode_cmd: Option<String>,
 }
 impl Dump {
@@ -285,15 +284,16 @@ impl Dump {
         let s = match reg.get(name) {
             None => {
                 let mut f = OpenOptions::new().append(true).create(true).open(&name)?;
-                let (sx, rx) = unbounded::<String>();
+                let (sx, mut rx) = channel::<String>(10);
                 reg.insert(name.to_owned(), sx.clone());
                 let name = name.to_owned();
-                tokio::spawn(rx.for_each(move |s| {
-                                   f.write_all(s.as_bytes())
-                                    .map_err(|e| {
-                                        error!("Writing to {}: {:?}", name, e);
-                                    })
-                               }));
+                tokio::spawn(async move {
+                    while let Some(s) = rx.next().await {
+                        if let Err(e) = f.write_all(s.as_bytes()) {
+                            error!("Writing to {}: {:?}", name, e);
+                        }
+                    }
+                });
                 sx
             },
             Some(s) => s.clone(),
@@ -308,7 +308,7 @@ impl Dump {
     }
 
     /// Serialize packet/metadata as json and asynchronously write it to the files.
-    pub fn dump(&self, con: ConnId, id: &str, from: &'static str, pkt: &Packet) {
+    pub async fn dump<'s>(&'s self, con: ConnId, id: &str, from: &str, pkt: &Packet) {
         // Build DumpMqtt struct
         let ts = Dump::now_str();
         let pkt = DumpMqtt::new(pkt, &self.decode_cmd);
@@ -316,7 +316,7 @@ impl Dump {
 
         // Send it to all writers
         for c in self.chans.iter() {
-            c.unbounded_send(e.clone()).unwrap();
+            c.clone().send(e.clone()).await.expect("Cannot send to chan");
         }
     }
 }

@@ -22,10 +22,10 @@
 
 
 use crate::{client::*, ASAP, FOREVER};
-use futures::{future::Future, sync::oneshot};
 use log::*;
 use std::{collections::HashMap,
           time::{Duration, Instant}};
+use tokio::sync::oneshot;
 
 pub(crate) struct Sessions(HashMap<String, Session>);
 impl Sessions {
@@ -33,10 +33,13 @@ impl Sessions {
         Self(HashMap::new())
     }
     /// Return new/live/closed SessionData, and mark it a "live", pointing to the calling client.
-    pub fn open(&mut self, client: &Client, clean_session: bool) -> SessionData {
+    pub async fn open(&mut self, client: &Client<'_>, clean_session: bool) -> SessionData {
         trace!("C{}: load session {} {:?}", client.id, client.name, self.0.keys());
         // Load previous session from the store (if it exist and hasn't expired).
-        let prev_session = self.0.remove(&client.name).map_or(None, |s| s.aquire(client));
+        let prev_session = match self.0.remove(&client.name) {
+            Some(s) => s.aquire(client).await,
+            None => None,
+        };
         // Make the session point to the calling client.
         self.0
             .insert(client.name.clone(), Session::new(client, &client.sess_expire, clean_session));
@@ -86,14 +89,14 @@ impl Session {
     }
     /// Obtain the SessionData from the Session enum or from the live Client, and return it if it
     /// hasn't expired.
-    fn aquire(self, client: &Client) -> Option<SessionData> {
+    async fn aquire(self, client: &Client<'_>) -> Option<SessionData> {
         match self {
             Self::Live(addr, d) => {
                 debug!("C{}: aquiring session from C{} {:?}", client.id, addr.1, d);
                 let (snd, rcv) = oneshot::channel();
-                addr.send(Msg::Replaced(client.id, snd));
+                addr.send(Msg::Replaced(client.id, snd)).await;
                 if d > ASAP {
-                    Some(rcv.wait().expect(""))
+                    Some(rcv.await.unwrap())
                 } else {
                     None
                 }

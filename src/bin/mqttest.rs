@@ -1,6 +1,6 @@
 use env_logger::builder;
 use log::*;
-use mqttest::{start, Conf};
+use mqttest::{Conf, Mqttest};
 use std::time::Duration;
 use structopt::{clap::AppSettings::*, StructOpt};
 
@@ -128,7 +128,8 @@ struct Opt {
 }
 
 // FIXME: Define exit codes
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::from_args();
     builder().filter_level(match opt.verbose {
                                0 => LevelFilter::Info,
@@ -139,24 +140,22 @@ fn main() {
              .parse_filters(&opt.log)
              .init();
     trace!("Cli {:?}", opt);
-    match start(Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
-                           .dumpfiles(opt.dumps)
-                           .dump_decode(opt.dump_decode)
-                           .ack_timeouts(opt.ack_timeouts[0].0,
-                                         opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
-                           .ack_delay(Duration::from_millis(opt.ack_delay))
-                           .strict(opt.strict)
-                           .idprefix(opt.idprefix)
-                           .userpass(opt.userpass)
-                           .max_connect(opt.max_connect.0)
-                           .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
-                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
-                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect()))
-    {
-        Ok((_port, server)) => {
-            tokio::run(server);
-            info!("done");
-        },
-        Err(e) => error!("Couldn't initialize server: {}", e),
-    }
+    let conf = Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
+                          .dumpfiles(opt.dumps)
+                          .dump_decode(opt.dump_decode)
+                          .ack_timeouts(opt.ack_timeouts[0].0,
+                                        opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
+                          .ack_delay(Duration::from_millis(opt.ack_delay))
+                          .strict(opt.strict)
+                          .idprefix(opt.idprefix)
+                          .userpass(opt.userpass)
+                          .max_connect(opt.max_connect.0)
+                          .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
+                          .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
+                          .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect());
+    let mut server = Mqttest::start(conf).await?;
+    info!("Listening on {:?}", server.port);
+    server.run().await;
+    info!("done");
+    Ok(())
 }

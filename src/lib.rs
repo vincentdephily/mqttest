@@ -1,11 +1,11 @@
 use crate::{client::*, dump::*, pubsub::*, session::*};
-use futures::{stream::Stream, Future};
+use futures::{lock::Mutex, prelude::*};
 use log::*;
 use std::{io::{Error, ErrorKind},
           ops::RangeInclusive,
-          sync::{Arc, Mutex, RwLock},
+          sync::Arc,
           time::Duration};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, spawn};
 
 mod client;
 mod dump;
@@ -20,7 +20,7 @@ const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 /// Zero Duration, to save on typing.
 const ASAP: Duration = Duration::from_secs(0);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Conf {
     ports: RangeInclusive<u16>,
     ack_timeouts: (Option<Duration>, Option<Duration>),
@@ -30,7 +30,7 @@ pub struct Conf {
     strict: bool,
     idprefix: String,
     userpass: Option<String>,
-    max_connect: Option<u64>,
+    max_connect: u64,
     max_pkt: Vec<Option<u64>>,
     max_time: Vec<Option<Duration>>,
     /// How long is the session retained after disconnection.
@@ -48,7 +48,7 @@ impl Conf {
                strict: false,
                idprefix: "".into(),
                userpass: None,
-               max_connect: None,
+               max_connect: std::u64::MAX,
                max_pkt: vec![None],
                max_time: vec![None],
                sess_expire: vec![None] }
@@ -86,7 +86,7 @@ impl Conf {
         self
     }
     pub fn max_connect(mut self, c: Option<u64>) -> Self {
-        self.max_connect = c;
+        self.max_connect = c.unwrap_or(std::u64::MAX);
         self
     }
     pub fn max_pkt(mut self, d: Vec<Option<u64>>) -> Self {
@@ -103,9 +103,9 @@ impl Conf {
     }
 }
 
-fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
+async fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
     for p in ports.clone().into_iter() {
-        match TcpListener::bind(&format!("127.0.0.1:{}", p).parse().unwrap()) {
+        match TcpListener::bind(&format!("127.0.0.1:{}", p)).await {
             Ok(l) => return Ok((p, l)),
             Err(e) => trace!("Listen on 127.0.0.1:{}: {}", p, e),
         }
@@ -114,26 +114,51 @@ fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error> {
     Err(Error::new(ErrorKind::Other, s))
 }
 
-pub fn start(conf: Conf) -> Result<(u16, impl Future<Item = (), Error = ()>), Error> {
-    debug!("Start {:?}", conf);
-    let (port, listener) = listen(&conf.ports)?;
-    info!("Listening on {:?}", port);
-    let subs = Arc::new(RwLock::new(Subs::new()));
-    let sess = Arc::new(Mutex::new(Sessions::new()));
-    let dumps = Dump::new(&conf.dump_decode);
-    let mut id = 0;
-    let f = listener.incoming()
-                    .take(conf.max_connect.unwrap_or(std::u64::MAX))
-                    .map_err(|e| error!("Failed to accept socket: {:?}", e))
-                    .for_each(move |socket| {
-                        tokio::spawn(Client::init(id,
-                                                  socket,
-                                                  subs.clone(),
-                                                  sess.clone(),
-                                                  dumps.clone(),
-                                                  &conf));
-                        id += 1;
-                        Ok(())
-                    });
-    Ok((port, f)) //FIXME: Include a cancellation handle.
+pub struct Mqttest {
+    pub conf: Conf,
+    pub port: u16,
+    listener: TcpListener,
+    subs: Arc<Mutex<Subs>>,
+    sess: Arc<Mutex<Sessions>>,
+    dumps: Dump,
+    conn_id: u64,
+}
+impl Mqttest {
+    /// Initialize a server with the given config, and start listening on socket.
+    pub async fn start(conf: Conf) -> Result<Mqttest, Error> {
+        debug!("Start {:?}", conf);
+        let (port, listener) = listen(&conf.ports).await?;
+        let subs = Arc::new(Mutex::new(Subs::new()));
+        let sess = Arc::new(Mutex::new(Sessions::new()));
+        let dumps = Dump::new(&conf.dump_decode);
+        Ok(Mqttest { conf, port, listener, subs, sess, dumps, conn_id: 0 })
+    }
+
+    /// Accept and process connections.
+    pub async fn run(&mut self) {
+        let mut jh = Vec::new();
+        for s in self.listener.incoming().next().await {
+            trace!("New connection {:?}", s);
+            match s {
+                Ok(socket) => {
+                    jh.push(spawn(Client::start(self.conn_id,
+                                                socket,
+                                                self.subs.clone(),
+                                                self.sess.clone(),
+                                                self.dumps.clone(),
+                                                self.conf.clone())));
+                    self.conn_id += 1;
+                    if self.conn_id >= self.conf.max_connect {
+                        break;
+                    }
+                },
+                Err(e) => error!("Failed to accept socket: {:?}", e),
+            };
+        }
+        // FIXME: Should try_join() inside the loop to avoid growing `jh` too much.
+        info!("Accepted {} connections, waiting for them to finish", self.conn_id);
+        for h in jh {
+            h.await.expect("Client finished abnormally");
+        }
+    }
 }
