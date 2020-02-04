@@ -99,6 +99,12 @@ struct Opt {
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     #[structopt(long = "max-pkt", value_name = "count", default_value = "-", use_delimiter = true)]
     max_pkt: Vec<OptU64>,
+    /// Delay before max-pkt disconnection.
+    ///
+    /// Useful if you want to receive the server response before disconnection. Use "-" for no
+    /// delay.
+    #[structopt(long = "max-pkt-delay", value_name = "ms", default_value = "-")]
+    max_pkt_delay: OptDuration,
     /// Disconnect the client after a certain time.
     ///
     /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
@@ -151,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           .userpass(opt.userpass)
                           .max_connect(opt.max_connect.0)
                           .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
+                          .max_pkt_delay(opt.max_pkt_delay.0)
                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect());
     let mut server = Mqttest::start(conf).await?;

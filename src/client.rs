@@ -41,7 +41,7 @@ impl Addr {
 
     /// Wait until `Instant` and then send `Msg` to `Addr`.
     async fn send_at_async(addr: Addr, deadline: Instant, msg: Msg) {
-        trace!("send_at n{:?} {:?} {:?}", deadline, addr, msg);
+        trace!("send_at {:?} {:?} {:?}", deadline, addr, msg);
         delay_until(deadline.into()).await;
         addr.send(msg).await;
     }
@@ -152,6 +152,8 @@ pub(crate) struct Client<'s> {
     qos1_check: Option<AbortOnDrop>,
     /// Disconnect after that many received packets.
     max_pkt: u64,
+    /// Delay before max_pkt disconnection.
+    max_pkt_delay: Option<Duration>,
     /// Count received packets.
     count_pkt: u64,
 }
@@ -187,6 +189,7 @@ impl Client<'_> {
                                   sess_expire,
                                   qos1_check: None,
                                   max_pkt,
+                                  max_pkt_delay: conf.max_pkt_delay,
                                   count_pkt: 0 };
 
         // Setup disconnect timer.
@@ -337,7 +340,11 @@ impl Client<'_> {
             },
         }
         if self.count_pkt >= self.max_pkt {
-            self.addr.send(Msg::Disconnect(format!("max packets {:?}", self.max_pkt))).await;
+            let reason = format!("max packets {:?} {:?}", self.max_pkt, self.max_pkt_delay);
+            match self.max_pkt_delay {
+                Some(d) => self.addr.send_at(Instant::now() + d, Msg::Disconnect(reason)),
+                None => self.addr.send(Msg::Disconnect(reason)).await,
+            }
         }
         Ok(())
     }

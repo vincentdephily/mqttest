@@ -32,6 +32,7 @@ pub struct Conf {
     userpass: Option<String>,
     max_connect: u64,
     max_pkt: Vec<Option<u64>>,
+    max_pkt_delay: Option<Duration>,
     max_time: Vec<Option<Duration>>,
     /// How long is the session retained after disconnection.
     ///
@@ -50,6 +51,7 @@ impl Conf {
                userpass: None,
                max_connect: std::u64::MAX,
                max_pkt: vec![None],
+               max_pkt_delay: None,
                max_time: vec![None],
                sess_expire: vec![None] }
     }
@@ -91,6 +93,10 @@ impl Conf {
     }
     pub fn max_pkt(mut self, d: Vec<Option<u64>>) -> Self {
         self.max_pkt = d;
+        self
+    }
+    pub fn max_pkt_delay(mut self, d: Option<Duration>) -> Self {
+        self.max_pkt_delay = d;
         self
     }
     pub fn max_time(mut self, d: Vec<Option<Duration>>) -> Self {
