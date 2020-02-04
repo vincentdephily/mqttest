@@ -137,7 +137,7 @@ impl Mqttest {
     /// Accept and process connections.
     pub async fn run(&mut self) {
         let mut jh = Vec::new();
-        for s in self.listener.incoming().next().await {
+        while let Some(s) = self.listener.incoming().next().await {
             trace!("New connection {:?}", s);
             match s {
                 Ok(socket) => {
