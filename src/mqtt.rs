@@ -13,8 +13,9 @@ impl Decoder for Codec {
     type Item = Packet;
     type Error = mqttrs::Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        trace!("C{}: dec {:?} -> ...", self.0, src);
         let res = mqttrs::decode(src);
-        trace!("C{}: dec {:?} -> {:?}", self.0, src, res);
+        trace!("C{}: dec ... -> {:?}", self.0, res);
         res
     }
 }
@@ -22,8 +23,9 @@ impl Encoder for Codec {
     type Item = Packet; // TODO: Would be nice to accept Into<Packet>. https://github.com/rust-lang/rust/issues/63063
     type Error = mqttrs::Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        trace!("C{}: enc {:?} -> ... ", self.0, item);
         let res = mqttrs::encode(&item, dst);
-        trace!("C{}: enc {:?} -> {:?}", self.0, dst, res);
+        trace!("C{}: enc ... -> {:?}", self.0, res);
         res
     }
 }
