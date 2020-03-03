@@ -50,7 +50,7 @@ Initial development has been sponsored by [Munic](https://munic.io/).
 
 ## Usage
 
-Install [Rust](https://rust-lang.org/) if necessary.
+Install [Rust](https://rust-lang.org/) >= 1.39.0 if necessary.
 
 ### Standalone
 
