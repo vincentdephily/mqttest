@@ -55,7 +55,7 @@ Install [Rust](https://rust-lang.org/) if necessary.
 ### Standalone
 
 ```shell
-# Build and install it
+# Build and install the executable
 cargo install --path .
 # Run it with the default options
 mqttest
@@ -69,7 +69,7 @@ In your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-mqttest = "0.1.0"
+mqttest = { version = "0.1.0", features = [] }
 ```
 
 In your unittests:
