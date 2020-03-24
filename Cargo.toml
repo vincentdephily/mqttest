@@ -20,8 +20,7 @@ bytes = "0.5.3"
 env_logger = { version = "0.7.0", optional = true }
 futures = "0.3.1"
 log = "0.4.7"
-#mqttrs = "0.2.0"
-mqttrs = { git = "https://github.com/vincentdephily/mqttrs", rev = "27e9f1ea78ada4d4cd5b99dd1101637b27875c78" }
+mqttrs = "0.3.0"
 rand = "0.7.2"
 serde =  { version = "1.0.99", features = ["derive"] }
 serde_json = "1.0.40"
