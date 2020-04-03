@@ -12,7 +12,7 @@ homepage = "https://github.com/vincentdephily/mqttest"
 repository = "https://github.com/vincentdephily/mqttest"
 
 [features]
-default = ["cli"]
+default = []
 cli = ["structopt", "env_logger"]
 
 [dependencies]
@@ -26,9 +26,12 @@ serde =  { version = "1.0.99", features = ["derive"] }
 serde_json = "1.0.40"
 structopt = { version = "0.3.1", optional = true }
 time = "0.2.1"
-tokio = { version = "0.2.6", features = ["macros", "net", "rt-threaded", "sync", "stream", "time"] }
+tokio = { version = "0.2.6", features = ["io-util", "macros", "net", "rt-threaded", "sync", "stream", "time"] }
 tokio-util = { version = "0.2.0", features = ["codec"] }
+
+[dev-dependencies]
+env_logger = "0.7.0"
 
 [[bin]]
 required-features = ["cli"]
-name="mqttest"
+name = "mqttest"

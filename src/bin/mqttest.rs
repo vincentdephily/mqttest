@@ -16,8 +16,8 @@ impl std::str::FromStr for OptDuration {
     }
 }
 #[derive(Debug)]
-struct OptU64(Option<u64>);
-impl std::str::FromStr for OptU64 {
+struct OptUsize(Option<usize>);
+impl std::str::FromStr for OptUsize {
     type Err = std::num::ParseIntError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &s[0..1] {
@@ -33,10 +33,10 @@ struct Opt {
     /// Increase log level (info -> debug -> trace). Shorthand for "--log debug" or "--log trace".
     #[structopt(short = "v", parse(from_occurrences))]
     verbose: usize,
-    /// Detailed log level. See https://docs.rs/env_logger/0.6.2/env_logger/index.html.
-    #[structopt(long = "log", default_value = "")]
+    /// Detailed log level. See https://docs.rs/env_logger/0.7.1/env_logger/index.html.
+    #[structopt(long = "log", default_value = "", hide_default_value = true)]
     log: String,
-    /// Ports to listen on (will only listen on the first successful one).
+    /// Ports to try to listen on, stopping at the first successful one.
     #[structopt(short = "p",
                 value_name = "PORT",
                 use_delimiter = true,
@@ -59,7 +59,7 @@ struct Opt {
                 min_values = 1,
                 max_values = 2)]
     ack_timeouts: Vec<OptDuration>,
-    /// Wait before sending publish and subscribe acks.
+    /// Delay before sending publish and subscribe acks.
     #[structopt(long = "ack-delay", value_name = "ms", default_value = "0")]
     ack_delay: u64,
     /// Dump packets to file.
@@ -76,7 +76,7 @@ struct Opt {
     /// and exit with a non-zero value.
     #[structopt(long = "dump-decode", value_name = "CMD")]
     dump_decode: Option<String>,
-    /// Be stricter about optional behaviours.
+    /// Be stricter about optional MQTT behaviours.
     ///
     /// [MQTT-3.1.3-5]: Reject client_ids longer than 23 chars or not matching [0-9a-zA-Z].
     /// [MQTT-3.1.3-6]: Reject empty client_ids.
@@ -92,13 +92,13 @@ struct Opt {
     userpass: Option<String>,
     /// Only accept up to N connections, and stop the server afterwards.
     #[structopt(long = "max-connect", short = "c", value_name = "count", default_value = "-")]
-    max_connect: OptU64,
+    max_connect: OptUsize,
     /// Disconnect the client after receiving that many packets.
     ///
     /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     #[structopt(long = "max-pkt", value_name = "count", default_value = "-", use_delimiter = true)]
-    max_pkt: Vec<OptU64>,
+    max_pkt: Vec<OptUsize>,
     /// Delay before max-pkt disconnection.
     ///
     /// Useful if you want to receive the server response before disconnection. Use "-" for no
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              .init();
     trace!("Cli {:?}", opt);
     let conf = Conf::new().ports(opt.ports[0]..=opt.ports[opt.ports.len() - 1])
-                          .dumpfiles(opt.dumps)
+                          .dump_files(opt.dumps)
                           .dump_decode(opt.dump_decode)
                           .ack_timeouts(opt.ack_timeouts[0].0,
                                         opt.ack_timeouts.get(1).unwrap_or(&OptDuration(None)).0)
@@ -160,9 +160,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           .max_pkt_delay(opt.max_pkt_delay.0)
                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect());
-    let mut server = Mqttest::start(conf).await?;
-    info!("Listening on {:?}", server.port);
-    server.run().await;
-    info!("done");
+    let server = Mqttest::start(conf).await?;
+    server.fut.await?;
+    info!("Done");
     Ok(())
 }

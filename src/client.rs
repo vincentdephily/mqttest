@@ -18,7 +18,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 
 
 /// Connection id for debug and indexing purposes.
-pub type ConnId = u64;
+pub type ConnId = usize;
 
 /// Wrapper around `futures::future::AbortHandle` that aborts when dropped.
 struct AbortOnDrop(pub AbortHandle);
@@ -151,16 +151,16 @@ pub(crate) struct Client<'s> {
     /// Handle to future sending the next Msg::CheckQos.
     qos1_check: Option<AbortOnDrop>,
     /// Disconnect after that many received packets.
-    max_pkt: u64,
+    max_pkt: usize,
     /// Delay before max_pkt disconnection.
     max_pkt_delay: Option<Duration>,
     /// Count received packets.
-    count_pkt: u64,
+    count_pkt: usize,
 }
 impl Client<'_> {
     /// Start a new `Client` on given socket, using a `Future` (to be executed by the caller) to
     /// represent the whole connection.
-    pub async fn start(id: u64,
+    pub async fn start(id: usize,
                        mut socket: TcpStream,
                        subs: Arc<Mutex<Subs>>,
                        sessions: Arc<Mutex<Sessions>>,
@@ -169,7 +169,7 @@ impl Client<'_> {
         info!("C{}: Connection from {:?}", id, socket);
         let (read, write) = socket.split();
         let (sx, rx) = channel::<Msg>(10);
-        let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::u64::MAX);
+        let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::usize::MAX);
         let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
         let mut client = Client { id,
                                   name: String::from(""),

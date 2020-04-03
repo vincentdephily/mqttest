@@ -166,8 +166,10 @@ pub enum DumpSubackcode {
 }
 
 
-/// Parsed MQTT packet. We use our own struct and substructs instead of the `mqttrs` ones, so that
-/// we can implement json serialisation, and add/remove some fields for readbility/unit-testing.
+/// Parsed MQTT packet.
+///
+/// We use our own struct and substructs instead of the `mqttrs` ones, so that we can implement json
+/// serialisation, and add/remove some fields for readbility/unit-testing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DumpMqtt {
     /// The string is the client id.
