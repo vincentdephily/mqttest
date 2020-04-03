@@ -222,7 +222,7 @@ impl Mqttest {
                 match s {
                     Ok(socket) => {
                         conns.push(ConnInfo {});
-                        jh.push(spawn(Client::start(conns.len(),
+                        jh.push(spawn(Client::start(conns.len() - 1,
                                                     socket,
                                                     subs.clone(),
                                                     sess.clone(),
