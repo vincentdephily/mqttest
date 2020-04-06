@@ -50,6 +50,7 @@ pub struct Conf {
     ack_timeouts: (Option<Duration>, Option<Duration>),
     ack_delay: Duration,
     dumps: Vec<String>,
+    dump_prefix: String,
     dump_decode: Option<String>,
     strict: bool,
     idprefix: String,
@@ -65,6 +66,7 @@ impl Conf {
     pub fn new() -> Self {
         Conf { ports: 1883..=2000,
                dumps: vec![],
+               dump_prefix: String::new(),
                dump_decode: None,
                ack_timeouts: (Some(Duration::from_secs(5)), None),
                ack_delay: ASAP,
@@ -91,6 +93,10 @@ impl Conf {
     /// [`DumpMeta`]: struct.DumpMeta.html
     pub fn dump_files(mut self, v: Vec<String>) -> Self {
         self.dumps.extend(v);
+        self
+    }
+    pub fn dump_prefix(mut self, s: String) -> Self {
+        self.dump_prefix = s;
         self
     }
     /// Decode command for publish payload.
@@ -214,7 +220,7 @@ impl Mqttest {
         let fut = spawn(async move {
             let subs = Arc::new(Mutex::new(Subs::new()));
             let sess = Arc::new(Mutex::new(Sessions::new()));
-            let dumps = Dump::new(&conf.dump_decode);
+            let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
             let mut conns: Vec<ConnInfo> = Vec::new();
             let mut jh = Vec::new();
             while let Some(s) = listener.incoming().next().await {

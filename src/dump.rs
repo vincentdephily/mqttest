@@ -270,25 +270,28 @@ pub(crate) struct Dump {
     reg: Arc<Mutex<HashMap<String, Sender<String>>>>,
     chans: Vec<Sender<String>>,
     decode_cmd: Option<String>,
+    prefix: String,
 }
 impl Dump {
-    pub fn new(decode_cmd: &Option<String>) -> Self {
+    pub fn new(decode_cmd: &Option<String>, prefix: &str) -> Self {
         Dump { reg: Arc::new(Mutex::new(HashMap::new())),
                chans: vec![],
-               decode_cmd: decode_cmd.clone() }
+               decode_cmd: decode_cmd.clone(),
+               prefix: prefix.to_owned() }
     }
 
     /// Register a new file to send dumps to. This spawns an async writer for each file, and makes
     /// sure that a given file is opened only once. Use `dump()` to send data to all the writers
     /// that have been registered with this `Dump`.
     pub fn register(&mut self, name: &str) -> Result<(), Error> {
+        let name = format!("{}{}", self.prefix, name);
         let mut reg = self.reg.lock().expect("Aquire Dump.reg");
-        let s = match reg.get(name) {
+        let s = match reg.get(&name) {
             None => {
+                debug!("Opening dump file {}", name);
                 let mut f = OpenOptions::new().append(true).create(true).open(&name)?;
                 let (sx, mut rx) = channel::<String>(10);
-                reg.insert(name.to_owned(), sx.clone());
-                let name = name.to_owned();
+                reg.insert(name.clone(), sx.clone());
                 tokio::spawn(async move {
                     while let Some(s) = rx.next().await {
                         if let Err(e) = f.write_all(s.as_bytes()) {
