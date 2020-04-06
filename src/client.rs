@@ -198,7 +198,7 @@ impl Client<'_> {
         }
 
         // Initialize json dump target.
-        for s in conf.dumps.iter().filter(|s| !s.contains("{i}")) {
+        for s in conf.dump_files {
             let s = s.replace("{c}", &format!("{}", id));
             match client.dumps.register(&s) {
                 Ok(_) => debug!("C{}: Dump to {}", id, s),

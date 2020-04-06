@@ -39,6 +39,37 @@ const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 /// Zero Duration, to save on typing.
 const ASAP: Duration = Duration::from_secs(0);
 
+/// Convenience type to save on typing an `Option<Duration>`.
+///
+/// ```
+/// # use mqttest::OptMsDuration;
+/// # use std::time::Duration;
+/// fn fmt_opt_duration(od: impl Into<OptMsDuration>) -> String {
+///     format!("{:?}", od.into().0)
+/// }
+/// assert_eq!("None", &fmt_opt_duration(None));
+/// assert_eq!("Some(0ns)", &fmt_opt_duration(Some(Duration::from_millis(0))));
+/// assert_eq!("Some(1s)", &fmt_opt_duration(Duration::from_secs(1)));
+/// assert_eq!("Some(2s)", &fmt_opt_duration(2000));
+///
+/// ```
+pub struct OptMsDuration(pub Option<Duration>);
+impl From<Duration> for OptMsDuration {
+    fn from(d: Duration) -> Self {
+        Self(Some(d))
+    }
+}
+impl From<u64> for OptMsDuration {
+    fn from(u: u64) -> Self {
+        Self(Some(Duration::from_millis(u)))
+    }
+}
+impl From<Option<Duration>> for OptMsDuration {
+    fn from(od: Option<Duration>) -> Self {
+        Self(od)
+    }
+}
+
 #[derive(Debug, Clone)]
 /// Specify server behavior.
 ///
@@ -49,7 +80,7 @@ pub struct Conf {
     ports: RangeInclusive<u16>,
     ack_timeouts: (Option<Duration>, Option<Duration>),
     ack_delay: Duration,
-    dumps: Vec<String>,
+    dump_files: Vec<String>,
     dump_prefix: String,
     dump_decode: Option<String>,
     strict: bool,
@@ -65,7 +96,7 @@ impl Conf {
     /// Initialize a default config
     pub fn new() -> Self {
         Conf { ports: 1883..=2000,
-               dumps: vec![],
+               dump_files: vec![],
                dump_prefix: String::new(),
                dump_decode: None,
                ack_timeouts: (Some(Duration::from_secs(5)), None),
@@ -85,18 +116,20 @@ impl Conf {
         self.ports = ports;
         self
     }
-    /// Dump packets to file.
+    /// Dump packets to files.
     ///
     /// The filename can contain a `{c}` placeholder that will be replaced by the connection
     /// number. The dump format is json-serialized [`DumpMeta`] struct.
     ///
     /// [`DumpMeta`]: struct.DumpMeta.html
-    pub fn dump_files(mut self, v: Vec<String>) -> Self {
-        self.dumps.extend(v);
+    // FIXME: PathBuf
+    pub fn dump_files(mut self, vs: Vec<impl Into<String>>) -> Self {
+        self.dump_files = vs.into_iter().map(|s| s.into()).collect();
         self
     }
-    pub fn dump_prefix(mut self, s: String) -> Self {
-        self.dump_prefix = s;
+    // FIXME: PathBuf
+    pub fn dump_prefix(mut self, s: impl Into<String>) -> Self {
+        self.dump_prefix = s.into();
         self
     }
     /// Decode command for publish payload.
@@ -104,8 +137,8 @@ impl Conf {
     /// The argument should be a command that reads raw payload from stdin, and writes the
     /// corresponding utf8/json to stdout. If decoding fails, it should output diagnostics to stderr
     /// and exit with a non-zero value.
-    pub fn dump_decode(mut self, s: Option<String>) -> Self {
-        self.dump_decode = s;
+    pub fn dump_decode(mut self, s: impl Into<Option<String>>) -> Self {
+        self.dump_decode = s.into();
         self
     }
     /// Resend packet during connection if ack takes longer than this (defaults to 5s).
@@ -116,13 +149,16 @@ impl Conf {
     /// The second value is for MQTT5 clients. MQTT5 forbids resending during connection, only set
     /// an MQTT5 value for testing purposes. MQTT3 doesn't specify a behaviour, but many
     /// client/servers do resend non-acked packets during connection.
-    pub fn ack_timeouts(mut self, mqtt3: Option<Duration>, mqtt5: Option<Duration>) -> Self {
-        self.ack_timeouts = (mqtt3, mqtt5);
+    pub fn ack_timeouts(mut self,
+                        mqtt3: impl Into<OptMsDuration>,
+                        mqtt5: impl Into<OptMsDuration>)
+                        -> Self {
+        self.ack_timeouts = (mqtt3.into().0, mqtt5.into().0);
         self
     }
     /// Delay before sending publish and subscribe acks.
-    pub fn ack_delay(mut self, d: Duration) -> Self {
-        self.ack_delay = d;
+    pub fn ack_delay(mut self, d: impl Into<OptMsDuration>) -> Self {
+        self.ack_delay = d.into().0.unwrap_or(Duration::from_secs(0));
         self
     }
     /// Be stricter about optional MQTT behaviours.
@@ -137,50 +173,50 @@ impl Conf {
         self
     }
     /// Reject clients whose client_id does not start with this prefix.
-    pub fn idprefix(mut self, s: String) -> Self {
-        self.idprefix = s;
+    pub fn idprefix(mut self, s: impl Into<String>) -> Self {
+        self.idprefix = s.into();
         self
     }
     /// Reject clients who didn't suppliy this username:password
     ///
     /// Note that MQTT allows passwords to be binary but we only accept UTF-8.
     // TODO: accept binary passwords
-    pub fn userpass(mut self, s: Option<String>) -> Self {
-        self.userpass = s;
+    pub fn userpass(mut self, s: impl Into<Option<String>>) -> Self {
+        self.userpass = s.into();
         self
     }
     /// Only accept up to N connections, and stop the server afterwards.
-    pub fn max_connect(mut self, c: Option<usize>) -> Self {
-        self.max_connect = c.unwrap_or(std::usize::MAX);
+    pub fn max_connect(mut self, c: impl Into<Option<usize>>) -> Self {
+        self.max_connect = c.into().unwrap_or(std::usize::MAX);
         self
     }
     /// Disconnect the Nth client after receiving that many packets.
     ///
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     // TODO: Add an option for clean disconnect
-    pub fn max_pkt(mut self, d: Vec<Option<usize>>) -> Self {
-        self.max_pkt = d;
+    pub fn max_pkt(mut self, vou: Vec<impl Into<Option<usize>>>) -> Self {
+        self.max_pkt = vou.into_iter().map(|ou| ou.into()).collect();
         self
     }
     /// Delay before max-pkt disconnection.
     ///
     /// Useful if you want to receive the server response before disconnection.
-    pub fn max_pkt_delay(mut self, d: Option<Duration>) -> Self {
-        self.max_pkt_delay = d;
+    pub fn max_pkt_delay(mut self, d: impl Into<OptMsDuration>) -> Self {
+        self.max_pkt_delay = d.into().0;
         self
     }
     /// Disconnect the Nth client after a certain time.
     ///
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
-    pub fn max_time(mut self, d: Vec<Option<Duration>>) -> Self {
-        self.max_time = d;
+    pub fn max_time(mut self, vod: Vec<impl Into<OptMsDuration>>) -> Self {
+        self.max_time = vod.into_iter().map(|od| od.into().0).collect();
         self
     }
     /// How long is the Nth session retained after disconnection.
     ///
     /// If None, use client-specified behaviour (clean_session in MQTT3, session expiry in MQTT5).
-    pub fn sess_expire(mut self, e: Vec<Option<Duration>>) -> Self {
-        self.sess_expire = e;
+    pub fn sess_expire(mut self, vod: Vec<impl Into<OptMsDuration>>) -> Self {
+        self.sess_expire = vod.into_iter().map(|od| od.into().0).collect();
         self
     }
 }
