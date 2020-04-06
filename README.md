@@ -14,10 +14,10 @@ Initial development has been sponsored by [Munic](https://munic.io/).
   - [x] Automatic open port discovery (simplifies parallel test execution)
   - [x] Statically-built single-file CLI binary (no runtime deps or fancy install)
   - [x] Use as a rust library
-    - [x] Decode dump to rust structs
+    - [x] Decode file dumps to rust structs
     - [x] Configure and start server
-    - [ ] Runtime server reconfiguration and shutdown
-    - [ ] Interact with clients using rust channels
+    - [ ] Runtime server control and client interaction using rust channels
+    - [ ] Return dumps and stats after each run
   - [ ] Use as a library from other languages
 - Verbose log file and network dump
   - [x] No need for RC-prone connection of an observer client
@@ -76,7 +76,7 @@ In your `Cargo.toml`:
 ```toml
 [dev-dependencies]
 # MQTT test server.
-mqttest = { version = "0.1.0", default-features = false }
+mqttest = { version = "0.2.0", default-features = false }
 # mqttest needs to be started from a tokio async context.
 tokio = "0.2"
 # At your discretion, if you want to see server logs.
@@ -92,11 +92,12 @@ fn block_on<T>(f: impl Future<Output = T>) -> T {
     tokio::runtime::Builder::new().basic_scheduler().enable_all().build().unwrap().block_on(f)
 }
 
+/// Example unittest. Bring your own client.
 #[test]
 fn connect() {
     let conns: Vec<ConnInfo> = block_on(async {
         // Create a server config
-        let conf = Conf::new().max_connect(Some(1));
+        let conf = Conf::new().max_connect(1);
         // Start the server
         let srv = Mqttest::start(conf).await.expect("Failed listen").await;
         // Start your client on the port that the server selected

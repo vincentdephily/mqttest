@@ -1,4 +1,19 @@
-# 0.1.0 2020-03-03
+# 0.2.0 (2020-04-06)
+
+Cater for the library usecase.
+
+* Changed server start/await API to be more practical
+* Revamped docs
+* Added example unittest
+* Improved Conf API ergonomy
+* Added a dump_prefix config
+* Switched mqttrs to upstream/crates.io release
+* Updated tokio-util to 0.3
+
+There is still plenty to do, but these changes were enough to convert my unittest to call the
+library instead of running the binary.
+
+# 0.1.0 (2020-03-03)
 
 First release :)
 
