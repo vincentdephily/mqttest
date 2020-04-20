@@ -40,9 +40,13 @@ Initial development has been sponsored by [Munic](https://munic.io/).
   - [x] MQTT 3.1.1
   - [ ] MQTT 5
   - [ ] IPv6
+  - [ ] TLS
   - [x] Warn about or reject extended client identifiers
   - [x] Warn about MQTT3 idioms obsoletted by MQTT5
   - [x] Documentation highlights MQTT implementation gotchas
+
+Some "missing" features may already be partially implemented. They will be marked as done when fully
+done.
 
 ## Non-features
 

@@ -21,7 +21,7 @@
 //! them in an eventually-consistent db, or the client reboots into an old state).
 
 
-use crate::{client::*, ASAP, FOREVER};
+use crate::{messages::*,client::*, ASAP, FOREVER};
 use log::*;
 use std::{collections::HashMap,
           time::{Duration, Instant}};
@@ -94,7 +94,7 @@ impl Session {
             Self::Live(addr, d) => {
                 debug!("C{}: aquiring session from C{} {:?}", client.id, addr.1, d);
                 let (snd, rcv) = oneshot::channel();
-                addr.send(Msg::Replaced(client.id, snd)).await;
+                addr.send(ClientEv::Replaced(client.id, snd)).await;
                 if d > ASAP {
                     Some(rcv.await.unwrap())
                 } else {

@@ -1,31 +1,15 @@
 //! Mqttest is indirectly but arguably well unittested by the client crates. This file is here as
 //! much for documenting usage as for actual unittesting.
 
-use super::{Conf, Mqttest, ConnInfo};
-use mqttrs::{encode, Connect, Protocol};
-use std::{future::Future,
-          net::{IpAddr, SocketAddr}};
-use tokio::{io::AsyncWriteExt, net::TcpStream, runtime::Builder};
+use crate::{test::client::client, *};
+use std::future::Future;
+use tokio::{runtime::Builder, spawn};
 
-/// Simplistic connect/disconnect client for illustration purpose.
-async fn client(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to TCP
-    let sock = SocketAddr::from((IpAddr::from([127, 0, 0, 1]), port));
-    let mut stream = TcpStream::connect(sock).await?;
-    // Send MQTT CONNECT
-    let mut buf = Vec::new();
-    let pkt = Connect { protocol: Protocol::MQTT311,
-                        keep_alive: 60,
-                        client_id: String::from("test"),
-                        clean_session: true,
-                        last_will: None,
-                        username: None,
-                        password: None };
-    encode(&pkt.into(), &mut buf)?;
-    stream.write_all(&buf).await?;
-    // TODO: Receive MQTT CONNACK, subscibe, publish
-    // Disconnect (drop the TcpStream)
-    Ok(())
+mod client;
+
+/// Convenience wrapper around tokio::time::timeout
+async fn timeout<T>(d: u64, f: impl Future<Output = T>) -> Option<T> {
+    tokio::time::timeout(Duration::from_millis(d), f).map(Result::ok).await
 }
 
 /// Boiler-plate to run and log async code from a unittest.
@@ -42,10 +26,59 @@ fn connect() {
         // Start the server
         let srv = Mqttest::start(conf).await.expect("Failed listen");
         // Start your client on the port that the server selected
-        client(srv.port).await.expect("client failure");
+        client("mqttest", srv.port, 0).await.expect("client failure");
         // Wait for the server to finish
-        srv.fut.await.unwrap()
+        srv.report.await.unwrap()
     });
     // Check run results
     assert_eq!(1, conns.len());
+}
+
+#[test]
+#[ignore] // FIXME fix bug and enable test
+fn stop_on_drop() {
+    block_on(async {
+        // Start a server but drop the Mqttest struct
+        let srv = Mqttest::start(Conf::new()).await.expect("Failed listen");
+        let port = srv.port;
+        drop(srv);
+
+        // Connecting client should fail
+        client("mqttest", port, 0).await.expect_err("client failure");
+    });
+}
+
+#[test]
+fn cmd_disconnect() {
+    block_on(async {
+        // Start the server
+        let conf = Conf::new().max_connect(Some(1));
+        let mut srv = Mqttest::start(conf).await.expect("Failed listen");
+
+        // Start long-running client as a separate task, look for start event
+        spawn(client("mqttest", srv.port, 1000));
+        assert_eq!(Some(Event::ClientStart(0)), srv.events.recv().await);
+
+        // Kill the client early
+        assert_eq!(None, timeout(50, srv.events.recv()).await);
+        srv.commands.send(Command::Disconnect(0)).await.expect("command failed");
+        assert_eq!(Some(Some(Event::ClientStop(0))), timeout(50, srv.events.recv()).await);
+
+        // Wait for the server to finish
+        srv.report.await.unwrap()
+    });
+}
+
+#[test]
+fn cmd_stopserver() {
+    block_on(async {
+        // Start a never-ending server
+        let conf = Conf::new();
+        let mut srv = Mqttest::start(conf).await.expect("Failed listen");
+
+        // And kill the server manually
+        srv.commands.send(Command::Stop).await.expect("command failed");
+        assert_eq!(Some(Some(Event::ServerStop)), timeout(50, srv.events.recv()).await);
+        srv.report.await.unwrap()
+    });
 }

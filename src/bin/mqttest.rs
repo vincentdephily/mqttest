@@ -90,7 +90,7 @@ struct Opt {
     /// Note that MQTT allows passwords to be binary but we only accept UTF-8.
     #[structopt(long = "userpass")]
     userpass: Option<String>,
-    /// Only accept up to N connections, and stop the server afterwards.
+    /// Only accept up to N connections, and stop the server after established connections close.
     #[structopt(long = "max-connect", short = "c", value_name = "count", default_value = "-")]
     max_connect: OptUsize,
     /// Disconnect the client after receiving that many packets.
@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect());
     let server = Mqttest::start(conf).await?;
-    server.fut.await?;
+    server.report.await?;
     info!("Done");
     Ok(())
 }

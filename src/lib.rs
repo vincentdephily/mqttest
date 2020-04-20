@@ -17,22 +17,28 @@
 
 mod client;
 mod dump;
+mod messages;
 mod mqtt;
 mod pubsub;
 mod session;
 #[cfg(any(test, doc))]
 mod test;
 
-use crate::{client::*, dump::*, pubsub::*, session::*};
+use crate::{client::*, dump::*, messages::*, pubsub::*, session::*};
 use futures::{lock::Mutex, prelude::*};
 use log::*;
-use std::{io::{Error, ErrorKind},
+use std::{collections::BTreeMap,
+          io::{Error, ErrorKind},
           ops::RangeInclusive,
           sync::Arc,
           time::Duration};
-use tokio::{net::TcpListener, spawn, task::JoinHandle};
+use tokio::{net::TcpListener,
+            spawn,
+            sync::mpsc::{channel, Receiver, Sender},
+            task::JoinHandle};
 
 pub use dump::*;
+pub use messages::*;
 
 /// Duration longer than program's lifetime (not quite `u64::MAX` so we can add `Instant::now()`).
 const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
@@ -51,7 +57,6 @@ const ASAP: Duration = Duration::from_secs(0);
 /// assert_eq!("Some(0ns)", &fmt_opt_duration(Some(Duration::from_millis(0))));
 /// assert_eq!("Some(1s)", &fmt_opt_duration(Duration::from_secs(1)));
 /// assert_eq!("Some(2s)", &fmt_opt_duration(2000));
-///
 /// ```
 pub struct OptMsDuration(pub Option<Duration>);
 impl From<Duration> for OptMsDuration {
@@ -185,7 +190,7 @@ impl Conf {
         self.userpass = s.into();
         self
     }
-    /// Only accept up to N connections, and stop the server afterwards.
+    /// Only accept up to N connections, and stop the server after established connections close.
     pub fn max_connect(mut self, c: impl Into<Option<usize>>) -> Self {
         self.max_connect = c.into().unwrap_or(std::usize::MAX);
         self
@@ -198,14 +203,14 @@ impl Conf {
         self.max_pkt = vou.into_iter().map(|ou| ou.into()).collect();
         self
     }
-    /// Delay before max-pkt disconnection.
+    /// Delay before max_pkt disconnection.
     ///
     /// Useful if you want to receive the server response before disconnection.
     pub fn max_pkt_delay(mut self, d: impl Into<OptMsDuration>) -> Self {
         self.max_pkt_delay = d.into().0;
         self
     }
-    /// Disconnect the Nth client after a certain time.
+    /// Disconnect the Nth client after a certain connection time.
     ///
     /// This just closes the TCP stream, without sending an mqtt disconnect packet.
     pub fn max_time(mut self, vod: Vec<impl Into<OptMsDuration>>) -> Self {
@@ -236,55 +241,116 @@ async fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error
     Err(Error::new(ErrorKind::Other, s))
 }
 
+/// Checked send to client task.
+async fn send_client(clients: &mut BTreeMap<usize, Sender<ClientEv>>, idx: usize, msg: ClientEv) {
+    debug!("Sending {:?} to {}", msg, idx);
+    if match clients.get_mut(&idx) {
+        Some(chan) => chan.send(msg).await.is_err(),
+        None => true,
+    } {
+        warn!("Can't send msg to {}", idx)
+    }
+}
+
 /// Handle to a running server.
 pub struct Mqttest {
     /// Tcp port that the server is listening on.
     pub port: u16,
+    /// `.await` this future to wait for the server to finish.
+    // TODO deprecate in favor of events.recv() and a helper function
+    pub report: JoinHandle<Vec<ConnInfo>>,
+    /// Send a [`Command`] to the running server.
     ///
-    pub fut: JoinHandle<Vec<ConnInfo>>,
+    /// [`Command`]: enum.Command.html
+    pub commands: Sender<Command>,
+    /// Receiver a [`Event`]s from the running server.
+    ///
+    /// [`Event`]: enum.Event.html
+    pub events: Receiver<Event>,
 }
 impl Mqttest {
     /// Initialize a server with the given config, and start handling connections.
     ///
     /// As soon as this function returns, the server is ready to accept connections. If the server
     /// is configured with a stop condition, you can wait for it using `Mqttest.fut`.
-    // TODO: make sure that droping the Mqttest struct terminates all futures
+    // FIXME: droping the Mqttest struct should terminate all futures
+    // TOOO: configurable cmd/event channel size
     pub async fn start(conf: Conf) -> Result<Mqttest, Error> {
         debug!("Start {:?}", conf);
-        let (port, mut listener) = listen(&conf.ports).await?;
 
-        let fut = spawn(async move {
-            let subs = Arc::new(Mutex::new(Subs::new()));
-            let sess = Arc::new(Mutex::new(Sessions::new()));
-            let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
-            let mut conns: Vec<ConnInfo> = Vec::new();
-            let mut jh = Vec::new();
-            while let Some(s) = listener.incoming().next().await {
-                trace!("New connection {:?}", s);
-                match s {
-                    Ok(socket) => {
+        // Basic init
+        let (port, listener) = listen(&conf.ports).await?;
+        let (cmd_s, mut cmd_r) = channel(1000);
+        let (event_s, event_r) = channel(1000);
+        let mut event_s = Some(event_s);
+        let (mev_s, mut mev_r) = channel(10);
+        let max_connect = conf.max_connect;
+        let subs = Arc::new(Mutex::new(Subs::new()));
+        let sess = Arc::new(Mutex::new(Sessions::new()));
+        let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
+        let mut conns: Vec<ConnInfo> = Vec::new();
+        let mut id = 0;
+        let mut clients = BTreeMap::new();
+
+        // Task to accept new connections and forward them to the main event loop
+        let mut mev_s2 = mev_s.clone();
+        spawn(async move {
+            let mut inc = listener.take(max_connect);
+            if max_connect > 0 {
+                while let Some(s) = inc.next().await {
+                    if mev_s2.send(MainEv::Accept(s)).await.is_err() {
+                        trace!("Main task finished, stopping accept task");
+                        break;
+                    }
+                }
+            }
+            info!("Accepted {} connections, waiting for them to finish", max_connect);
+        });
+
+        // Task to receive external commands and forward them to the main event loop
+        let mut mev_s3 = mev_s.clone();
+        spawn(async move {
+            while let Some(c) = cmd_r.next().await {
+                if mev_s3.send(MainEv::Cmd(c)).await.is_err() {
+                    trace!("Main task finished, stopping cmd task");
+                    break;
+                }
+            }
+        });
+
+        // Main event loop task
+        let report = spawn(async move {
+            while let Some(ev) = mev_r.next().await {
+                info!("{:?}", ev);
+                match ev {
+                    MainEv::Accept(Ok(socket)) => {
                         conns.push(ConnInfo {});
-                        jh.push(spawn(Client::start(conns.len() - 1,
-                                                    socket,
-                                                    subs.clone(),
-                                                    sess.clone(),
-                                                    dumps.clone(),
-                                                    conf.clone())));
-                        if conns.len() >= conf.max_connect {
+                        let (cev_s, cev_r) = channel::<ClientEv>(10);
+                        clients.insert(id, cev_s.clone());
+                        Client::spawn(id, socket, &subs, &sess, &dumps, &conf, &event_s, cev_s, cev_r, &mev_s);
+                        id += 1;
+                    },
+                    MainEv::Accept(Err(e)) => error!("Failed to accept socket: {:?}", e),
+                    MainEv::Cmd(Command::Disconnect(i)) => {
+                        send_client(&mut clients, i, ClientEv::Disconnect(String::from("cmd"))).await
+                    },
+                    MainEv::Cmd(Command::Stop) => {
+                        break;
+                    },
+                    MainEv::Finish(idx) => {
+                        clients.remove(&idx).expect("Trying to remove non-existent client");
+                        if id >= max_connect && clients.is_empty() {
                             break;
                         }
-                    },
-                    Err(e) => error!("Failed to accept socket: {:?}", e),
-                };
+                    }
+                }
             }
-            // FIXME: Should try_join() inside the loop to avoid growing `jh` too much.
-            info!("Accepted {} connections, waiting for them to finish", conns.len());
-            for h in jh {
-                h.await.expect("Client finished abnormally");
-            }
+            option_send(&mut event_s, Event::ServerStop, "Event");
             conns
         });
-        Ok(Mqttest { port, fut })
+
+        // Server is ready
+        Ok(Mqttest { port, report, commands: cmd_s, events: event_r })
     }
 }
 

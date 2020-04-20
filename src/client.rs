@@ -1,4 +1,4 @@
-use crate::{dump::*, mqtt::*, pubsub::*, session::*, Conf, FOREVER};
+use crate::{dump::*, messages::*, mqtt::*, pubsub::*, session::*, Conf, FOREVER};
 use futures::{future::{abortable, AbortHandle},
               lock::Mutex,
               prelude::*};
@@ -11,14 +11,11 @@ use std::{collections::HashMap,
 use tokio::{net::{tcp::{ReadHalf, WriteHalf},
                   TcpStream},
             spawn,
-            sync::{mpsc::{channel, Receiver, Sender},
+            sync::{mpsc::{Receiver, Sender},
                    oneshot},
             time::delay_until};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-
-/// Connection id for debug and indexing purposes.
-pub type ConnId = usize;
 
 /// Wrapper around `futures::future::AbortHandle` that aborts when dropped.
 struct AbortOnDrop(pub AbortHandle);
@@ -28,33 +25,33 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// Allows sending a `Msg` to a `Client`.
+/// Allows sending a `ClientEv` to a `Client`.
 #[derive(Clone)]
-pub struct Addr(Sender<Msg>, pub(crate) ConnId);
+pub struct Addr(Sender<ClientEv>, pub(crate) ConnId);
 impl Addr {
-    /// Send `Msg` to `Addr`.
-    pub(crate) async fn send(&self, msg: Msg) {
+    /// Send `ClientEv` to `Addr`.
+    pub(crate) async fn send(&self, msg: ClientEv) {
         if let Err(e) = self.0.clone().send(msg).await {
             warn!("Trying to send to disconnected Addr {:?}", e);
         }
     }
 
-    /// Wait until `Instant` and then send `Msg` to `Addr`.
-    async fn send_at_async(addr: Addr, deadline: Instant, msg: Msg) {
+    /// Wait until `Instant` and then send `ClientEv` to `Addr`.
+    async fn send_at_async(addr: Addr, deadline: Instant, msg: ClientEv) {
         trace!("send_at {:?} {:?} {:?}", deadline, addr, msg);
         delay_until(deadline.into()).await;
         addr.send(msg).await;
     }
 
-    /// Schedule `Msg` to be sent to `Addr` at `Instant`.
-    fn send_at(&self, deadline: Instant, msg: Msg) {
+    /// Schedule `ClientEv` to be sent to `Addr` at `Instant`.
+    fn send_at(&self, deadline: Instant, msg: ClientEv) {
         spawn(Self::send_at_async(self.clone(), deadline, msg).map(drop));
     }
 
-    /// Schedule `Msg` to be sent to `Addr` at `Instant`, returning a andle that will abort sending
+    /// Schedule `ClientEv` to be sent to `Addr` at `Instant`, returning a andle that will abort sending
     /// if dropped.
     #[must_use]
-    fn send_at_abort(&self, deadline: Instant, msg: Msg) -> AbortOnDrop {
+    fn send_at_abort(&self, deadline: Instant, msg: ClientEv) -> AbortOnDrop {
         let (f, h) = abortable(Self::send_at_async(self.clone(), deadline, msg));
         spawn(f.map(drop));
         AbortOnDrop(h)
@@ -72,15 +69,6 @@ impl std::fmt::Debug for Addr {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Msg {
-    PktIn(Packet),
-    PktOut(Packet),
-    Publish(QoS, Publish),
-    CheckQos,
-    Replaced(ConnId, oneshot::Sender<SessionData>),
-    Disconnect(String),
-}
 
 /// Session data. To be restored at connection, and kept up to date during connection.
 ///
@@ -114,7 +102,7 @@ impl SessionData {
     }
 }
 
-/// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `Msg`s
+/// The `Client` struct follows the actor model. It's owned by one `Future`, that receives `ClientEv`s
 /// and handles them, mutating the struct.
 pub(crate) struct Client<'s> {
     pub id: ConnId,
@@ -127,6 +115,8 @@ pub(crate) struct Client<'s> {
     writer: FramedWrite<WriteHalf<'s>, Codec>,
     /// Dump targets.
     dumps: Dump,
+    /// Send events to lib user
+    event_s: Option<Sender<Event>>,
     /// Protocol-specific ack-timeout config.
     ack_timeouts_conf: (Option<Duration>, Option<Duration>),
     /// Pending acks will timeout after that duration.
@@ -148,7 +138,7 @@ pub(crate) struct Client<'s> {
     session: Option<SessionData>,
     /// Override session expiry time.
     pub sess_expire: Option<Duration>,
-    /// Handle to future sending the next Msg::CheckQos.
+    /// Handle to future sending the next ClientEv::CheckQos.
     qos1_check: Option<AbortOnDrop>,
     /// Disconnect after that many received packets.
     max_pkt: usize,
@@ -158,25 +148,50 @@ pub(crate) struct Client<'s> {
     count_pkt: usize,
 }
 impl Client<'_> {
+    pub(crate) fn spawn(id: ConnId,
+                        socket: TcpStream,
+                        subs: &Arc<Mutex<Subs>>,
+                        sess: &Arc<Mutex<Sessions>>,
+                        dumps: &Dump,
+                        conf: &Conf,
+                        event_s: &Option<Sender<Event>>,
+                        cev_s: Sender<ClientEv>,
+                        cev_r: Receiver<ClientEv>,
+                        mev_s: &Sender<MainEv>) {
+        let mut mev_s = mev_s.clone();
+        let subs = subs.clone();
+        let sess = sess.clone();
+        let dumps = dumps.clone();
+        let event_s = event_s.clone();
+        let conf = conf.clone(); // TODO: use an Arc<Conf>
+        spawn(async move {
+            Client::start(id, socket, subs, sess, dumps, conf, event_s, cev_s, cev_r).await;
+            mev_s.send(MainEv::Finish(id)).await
+        });
+    }
     /// Start a new `Client` on given socket, using a `Future` (to be executed by the caller) to
     /// represent the whole connection.
-    pub async fn start(id: usize,
-                       mut socket: TcpStream,
-                       subs: Arc<Mutex<Subs>>,
-                       sessions: Arc<Mutex<Sessions>>,
-                       dumps: Dump,
-                       conf: Conf) {
+    async fn start(id: ConnId,
+                   mut socket: TcpStream,
+                   subs: Arc<Mutex<Subs>>,
+                   sessions: Arc<Mutex<Sessions>>,
+                   dumps: Dump,
+                   conf: Conf,
+                   mut event_s: Option<Sender<Event>>,
+                   cev_s: Sender<ClientEv>,
+                   cev_r: Receiver<ClientEv>) {
         info!("C{}: Connection from {:?}", id, socket);
+        option_send(&mut event_s, Event::ClientStart(id), "Event");
         let (read, write) = socket.split();
-        let (sx, rx) = channel::<Msg>(10);
         let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::usize::MAX);
         let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
         let mut client = Client { id,
                                   name: String::from(""),
-                                  addr: Addr(sx.clone(), id),
+                                  addr: Addr(cev_s.clone(), id),
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)),
                                   dumps,
+                                  event_s,
                                   ack_timeouts_conf: conf.ack_timeouts,
                                   ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
                                   ack_delay: conf.ack_delay,
@@ -194,7 +209,8 @@ impl Client<'_> {
 
         // Setup disconnect timer.
         if let Some(m) = conf.max_time[id as usize % conf.max_time.len()] {
-            client.addr.send_at(Instant::now() + m, Msg::Disconnect(format!("max time {:?}", m)))
+            client.addr
+                  .send_at(Instant::now() + m, ClientEv::Disconnect(format!("max time {:?}", m)))
         }
 
         // Initialize json dump target.
@@ -206,9 +222,9 @@ impl Client<'_> {
             }
         }
 
-        // Handle the Tcp and Msg streams concurrently.
-        let f1 = Self::handle_net(read, sx, client.id);
-        let f2 = Self::handle_msgs(&mut client, rx);
+        // Handle the Tcp and ClientEv streams concurrently.
+        let f1 = Self::handle_net(read, cev_s, client.id);
+        let f2 = Self::handle_msg(&mut client, cev_r);
         let res = futures::select!(r = f1.fuse() => r, r = f2.fuse() => r);
 
         // One of the stream ended, cleanup.
@@ -219,34 +235,37 @@ impl Client<'_> {
             let mut sm = client.sessions.lock().await;
             sm.close(&client, sess);
         }
+        option_send(&mut client.event_s, Event::ClientStop(client.id), "Event")
     }
 
-    /// Frame bytes from the socket as Decode MQTT packets, and forwards them as `Msg`s.
+    /// Frame bytes from the socket as Decode MQTT packets, and forwards them as `ClientEv`s.
     async fn handle_net(read: ReadHalf<'_>,
-                        mut sx: Sender<Msg>,
+                        mut sx: Sender<ClientEv>,
                         id: ConnId)
                         -> Result<&'static str, Error> {
         let mut frame = FramedRead::new(read, Codec(id));
         while let Some(pkt) = frame.next().await {
-            sx.send(Msg::PktIn(pkt?))
-              .await
-              .map_err(|e| Error::new(ErrorKind::Other, format!("while sending to self: {}", e)))?;
+            sx.send(ClientEv::PktIn(pkt?)).await.map_err(|e| {
+                                                     Error::new(ErrorKind::Other,
+                                                               format!("while sending to self: {}",
+                                                                       e))
+                                                 })?;
         }
         Ok("Connection closed")
     }
 
-    /// Handle `Msg`s. This is `Client`'s main event loop.
-    async fn handle_msgs(client: &mut Client<'_>,
-                         mut receiver: Receiver<Msg>)
-                         -> Result<&'static str, Error> {
+    /// Handle `ClientEv`s. This is `Client`'s main event loop.
+    async fn handle_msg(client: &mut Client<'_>,
+                        mut receiver: Receiver<ClientEv>)
+                        -> Result<&'static str, Error> {
         while let Some(msg) = receiver.next().await {
             match msg {
-                Msg::PktIn(p) => client.handle_pkt_in(p).await?,
-                Msg::PktOut(p) => client.handle_pkt_out(p).await?,
-                Msg::Publish(q, p) => client.handle_publish(q, p).await?,
-                Msg::CheckQos => client.handle_check_qos(Instant::now()).await?,
-                Msg::Replaced(i, c) => client.handle_replaced(i, c)?,
-                Msg::Disconnect(r) => client.handle_disconnect(r)?,
+                ClientEv::PktIn(p) => client.handle_pkt_in(p).await?,
+                ClientEv::PktOut(p) => client.handle_pkt_out(p).await?,
+                ClientEv::Publish(q, p) => client.handle_publish(q, p).await?,
+                ClientEv::CheckQos => client.handle_check_qos(Instant::now()).await?,
+                ClientEv::Replaced(i, c) => client.handle_replaced(i, c)?,
+                ClientEv::Disconnect(r) => client.handle_disconnect(r)?,
             }
         }
         Ok("No more messages")
@@ -268,7 +287,7 @@ impl Client<'_> {
                 // Set and check client name
                 self.name = c.client_id.clone();
                 if let Err((code, desc)) = self.check_credentials(&c) {
-                    self.addr.send(Msg::PktOut(connack(false, code))).await;
+                    self.addr.send(ClientEv::PktOut(connack(false, code))).await;
                     return Err(Error::new(ErrorKind::ConnectionAborted, desc));
                 }
                 // Load session
@@ -286,9 +305,9 @@ impl Client<'_> {
                 }
                 self.session = Some(sess);
                 // Handle QoS
-                self.addr.send(Msg::CheckQos).await;
+                self.addr.send(ClientEv::CheckQos).await;
                 // Send connack
-                self.addr.send(Msg::PktOut(connack(isold, ConnectReturnCode::Accepted))).await;
+                self.addr.send(ClientEv::PktOut(connack(isold, ConnectReturnCode::Accepted))).await;
             },
             // FIXME: Use our own error type, and let this one log as INFO rather than ERROR
             (Packet::Disconnect, true) => {
@@ -296,7 +315,7 @@ impl Client<'_> {
                 return Err(Error::new(ErrorKind::ConnectionAborted, "Disconnect"));
             },
             // Ping request
-            (Packet::Pingreq, true) => self.addr.send(Msg::PktOut(pingresp())).await,
+            (Packet::Pingreq, true) => self.addr.send(ClientEv::PktOut(pingresp())).await,
             // Puback: cancel the resend timer if the ack was expected, die otherwise.
             (Packet::Puback(pid), true) => {
                 let sess = self.session.as_mut().expect("unwrap session");
@@ -309,14 +328,14 @@ impl Client<'_> {
             (Packet::Publish(p), true) => {
                 if let Some(subs) = self.subs.lock().await.get(&p.topic_name) {
                     for s in subs.values() {
-                        s.addr.send(Msg::Publish(s.qos, p.clone())).await;
+                        s.addr.send(ClientEv::Publish(s.qos, p.clone())).await;
                     }
                 }
                 match p.qospid {
                     QosPid::AtMostOnce => (),
                     QosPid::AtLeastOnce(pid) => {
                         let d = Instant::now() + self.ack_delay;
-                        self.addr.send_at(d, Msg::PktOut(puback(pid)));
+                        self.addr.send_at(d, ClientEv::PktOut(puback(pid)));
                     },
                     QosPid::ExactlyOnce(_) => panic!("ExactlyOnce not supported yet"),
                 }
@@ -333,7 +352,7 @@ impl Client<'_> {
                     codes.push(SubscribeReturnCodes::Success(qos));
                 }
                 let d = Instant::now() + self.ack_delay;
-                self.addr.send_at(d, Msg::PktOut(suback(pid, codes)));
+                self.addr.send_at(d, ClientEv::PktOut(suback(pid, codes)));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -342,8 +361,8 @@ impl Client<'_> {
         if self.count_pkt >= self.max_pkt {
             let reason = format!("max packets {:?} {:?}", self.max_pkt, self.max_pkt_delay);
             match self.max_pkt_delay {
-                Some(d) => self.addr.send_at(Instant::now() + d, Msg::Disconnect(reason)),
-                None => self.addr.send(Msg::Disconnect(reason)).await,
+                Some(d) => self.addr.send_at(Instant::now() + d, ClientEv::Disconnect(reason)),
+                None => self.addr.send(ClientEv::Disconnect(reason)).await,
             }
         }
         Ok(())
@@ -376,7 +395,7 @@ impl Client<'_> {
 
             // Schedule the next check for timedout acks.
             if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
-                self.qos1_check = Some(self.addr.send_at_abort(deadline, Msg::CheckQos));
+                self.qos1_check = Some(self.addr.send_at_abort(deadline, ClientEv::CheckQos));
             }
         }
         self.handle_pkt_out(pkt).await
@@ -392,12 +411,12 @@ impl Client<'_> {
         for (pid, (deadline, pkt)) in sess.qos1.iter() {
             if *deadline > reftime {
                 warn!("C{}: Timeout receiving ack {:?}, resending packet", id, pid);
-                addr.send(Msg::PktOut(pkt.clone())).await
+                addr.send(ClientEv::PktOut(pkt.clone())).await
             }
         }
         sess.qos1.retain(|_pid, (deadline, _pkt)| *deadline <= reftime);
         if let Some(deadline) = sess.qos1.values().map(|(d, _)| d).min() {
-            self.qos1_check = Some(self.addr.send_at_abort(*deadline, Msg::CheckQos));
+            self.qos1_check = Some(self.addr.send_at_abort(*deadline, ClientEv::CheckQos));
         }
         Ok(())
     }

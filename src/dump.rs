@@ -1,4 +1,4 @@
-use crate::{client::ConnId,
+use crate::{ConnId,
             mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes}};
 use futures::prelude::*;
 use log::*;
