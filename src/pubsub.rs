@@ -1,4 +1,4 @@
-use crate::{ConnId, client::*, mqtt::*};
+use crate::{client::*, mqtt::*, ConnId};
 use log::*;
 use std::collections::HashMap;
 

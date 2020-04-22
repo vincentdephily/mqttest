@@ -27,7 +27,7 @@ mod test;
 use crate::{client::*, dump::*, messages::*, pubsub::*, session::*};
 use futures::{lock::Mutex, prelude::*};
 use log::*;
-use std::{collections::BTreeMap,
+use std::{collections::HashMap,
           io::{Error, ErrorKind},
           ops::RangeInclusive,
           sync::Arc,
@@ -96,6 +96,8 @@ pub struct Conf {
     max_pkt_delay: Option<Duration>,
     max_time: Vec<Option<Duration>>,
     sess_expire: Vec<Option<Duration>>,
+    event_filter: HashMap<EventKind, bool>,
+    event_default: bool,
 }
 impl Conf {
     /// Initialize a default config
@@ -113,7 +115,9 @@ impl Conf {
                max_pkt: vec![None],
                max_pkt_delay: None,
                max_time: vec![None],
-               sess_expire: vec![None] }
+               sess_expire: vec![None],
+               event_filter: HashMap::new(),
+               event_default: true }
     }
     /// Range of ports to try to listen on, stopping at the first successful one) (defaults to
     /// `1883..=2000`)
@@ -224,6 +228,30 @@ impl Conf {
         self.sess_expire = vod.into_iter().map(|od| od.into().0).collect();
         self
     }
+    /// Filter server-sent events: set the default to *ignore* and add an exception to *send* this [`EventKind`].
+    ///
+    /// [`EventKind`]: enum.EventKind.html
+    pub fn event_on(mut self, k: EventKind) -> Self {
+        self.event_filter.insert(k, true);
+        self.event_default = false;
+        self
+    }
+    /// Filter server-sent events: set the default to *send* and add an exception to *ignore* this [`EventKind`].
+    ///
+    /// [`EventKind`]: enum.EventKind.html
+    pub fn event_off(mut self, k: EventKind) -> Self {
+        self.event_filter.insert(k, false);
+        self.event_default = true;
+        self
+    }
+    /// Filter server-sent events: set the default to *send* (`true`) or *ignore* (`false`) and remove exceptions.
+    ///
+    /// [`EventKind`]: enum.EventKind.html
+    pub fn event_reset(mut self, def: bool) -> Self {
+        self.event_filter = HashMap::new();
+        self.event_default = def;
+        self
+    }
 }
 
 /// Listen on the first available TCP port.
@@ -242,7 +270,7 @@ async fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error
 }
 
 /// Checked send to client task.
-async fn send_client(clients: &mut BTreeMap<usize, Sender<ClientEv>>, idx: usize, msg: ClientEv) {
+async fn send_client(clients: &mut HashMap<usize, Sender<ClientEv>>, idx: usize, msg: ClientEv) {
     debug!("Sending {:?} to {}", msg, idx);
     if match clients.get_mut(&idx) {
         Some(chan) => chan.send(msg).await.is_err(),
@@ -263,8 +291,14 @@ pub struct Mqttest {
     ///
     /// [`Command`]: enum.Command.html
     pub commands: Sender<Command>,
-    /// Receiver a [`Event`]s from the running server.
+    /// Receive [`Event`]s from the running server.
     ///
+    /// By default, all [`EventKind`]s are sent. See [`event_on()`]/[`event_off()`]/[`event_reset()`] to configure.
+    ///
+    /// [`EventKind`]: enum.EventKind.html
+    /// [`event_on()`]: struct.Conf.html#method.event_on
+    /// [`event_off()`]: struct.Conf.html#method.event_off
+    /// [`event_reset()`]: struct.Conf.html#method.event_reset
     /// [`Event`]: enum.Event.html
     pub events: Receiver<Event>,
 }
@@ -282,7 +316,7 @@ impl Mqttest {
         let (port, listener) = listen(&conf.ports).await?;
         let (cmd_s, mut cmd_r) = channel(1000);
         let (event_s, event_r) = channel(1000);
-        let mut event_s = Some(event_s);
+        let mut event_s = SendEvent::new(event_s, conf.event_filter.clone(), conf.event_default);
         let (mev_s, mut mev_r) = channel(10);
         let max_connect = conf.max_connect;
         let subs = Arc::new(Mutex::new(Subs::new()));
@@ -290,7 +324,7 @@ impl Mqttest {
         let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
         let mut conns: Vec<ConnInfo> = Vec::new();
         let mut id = 0;
-        let mut clients = BTreeMap::new();
+        let mut clients = HashMap::new();
 
         // Task to accept new connections and forward them to the main event loop
         let mut mev_s2 = mev_s.clone();
@@ -334,7 +368,11 @@ impl Mqttest {
                     MainEv::Cmd(Command::Disconnect(i)) => {
                         send_client(&mut clients, i, ClientEv::Disconnect(String::from("cmd"))).await
                     },
+                    MainEv::Cmd(Command::SendPacket(i, p)) => {
+                        send_client(&mut clients, i, ClientEv::PktOut(p)).await
+                    },
                     MainEv::Cmd(Command::Stop) => {
+                        // FIXME: disconnect all clients
                         break;
                     },
                     MainEv::Finish(idx) => {
@@ -345,7 +383,7 @@ impl Mqttest {
                     }
                 }
             }
-            option_send(&mut event_s, Event::ServerStop, "Event");
+            event_s.send(Event::done());
             conns
         });
 

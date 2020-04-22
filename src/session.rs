@@ -21,7 +21,7 @@
 //! them in an eventually-consistent db, or the client reboots into an old state).
 
 
-use crate::{messages::*,client::*, ASAP, FOREVER};
+use crate::{client::*, messages::*, ASAP, FOREVER};
 use log::*;
 use std::{collections::HashMap,
           time::{Duration, Instant}};

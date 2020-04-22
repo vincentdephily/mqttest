@@ -1,3 +1,18 @@
+# 0.3.0 (unreleased)
+
+* You can now send commands to a running server
+  - Send an `mqttrs::Packet` to a client
+  - Disconnect a client
+  - Stop the server
+* You can now receive events from the server
+  - Client connect/disconnect
+  - Packets sent/received
+  - Server termination
+* Server can be configured to only send certain kinds of events
+
+MSRV goes up to 1.42 for running `mqttest`'s own tests, but remains at 1.39 for building and using
+in your own unittests.
+
 # 0.2.0 (2020-04-06)
 
 Cater for the library usecase.

@@ -1,7 +1,9 @@
 //! Mqttest is indirectly but arguably well unittested by the client crates. This file is here as
 //! much for documenting usage as for actual unittesting.
+// TODO: convert to example
 
 use crate::{test::client::client, *};
+use mqttrs::*;
 use std::future::Future;
 use tokio::{runtime::Builder, spawn};
 
@@ -14,7 +16,10 @@ async fn timeout<T>(d: u64, f: impl Future<Output = T>) -> Option<T> {
 
 /// Boiler-plate to run and log async code from a unittest.
 fn block_on<T>(f: impl Future<Output = T>) -> T {
-    let _ = env_logger::builder().is_test(true).parse_filters("debug").try_init();
+    let _ = env_logger::builder().format_timestamp_millis()
+                                 .is_test(true)
+                                 .parse_filters("debug")
+                                 .try_init();
     Builder::new().basic_scheduler().enable_all().build().unwrap().block_on(f)
 }
 
@@ -52,20 +57,20 @@ fn stop_on_drop() {
 fn cmd_disconnect() {
     block_on(async {
         // Start the server
-        let conf = Conf::new().max_connect(Some(1));
+        let conf =
+            Conf::new().max_connect(Some(1)).event_on(EventKind::Discon).event_on(EventKind::Done);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start long-running client as a separate task, look for start event
         spawn(client("mqttest", srv.port, 1000));
-        assert_eq!(Some(Event::ClientStart(0)), srv.events.recv().await);
 
-        // Kill the client early
+        // Kill the client early, check for quick death
         assert_eq!(None, timeout(50, srv.events.recv()).await);
         srv.commands.send(Command::Disconnect(0)).await.expect("command failed");
-        assert_eq!(Some(Some(Event::ClientStop(0))), timeout(50, srv.events.recv()).await);
+        assert_eq!(timeout(50, srv.events.recv()).await, Some(Some(Event::discon(0))));
 
         // Wait for the server to finish
-        srv.report.await.unwrap()
+        assert_eq!(srv.events.recv().await, Some(Event::done()));
     });
 }
 
@@ -78,7 +83,34 @@ fn cmd_stopserver() {
 
         // And kill the server manually
         srv.commands.send(Command::Stop).await.expect("command failed");
-        assert_eq!(Some(Some(Event::ServerStop)), timeout(50, srv.events.recv()).await);
-        srv.report.await.unwrap()
+        assert_eq!(timeout(50, srv.events.recv()).await, Some(Some(Event::done())));
+    });
+}
+
+#[test]
+fn cmd_sendping() {
+    block_on(async {
+        // Start the server
+        let conf = Conf::new().max_connect(Some(1))
+                              .event_on(EventKind::Recv)
+                              .event_on(EventKind::Send)
+                              .event_on(EventKind::Done);
+        let mut srv = Mqttest::start(conf).await.expect("Failed listen");
+
+        // Start client and wait for handshake
+        spawn(client("mqttest", srv.port, 200));
+        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Connect(_)))));
+        assert!(matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_)))));
+        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Publish(_)))));
+        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Subscribe(_)))));
+        assert!(matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_)))));
+
+        // Send ping and wait for pong
+        srv.commands.send(Command::SendPacket(0, Packet::Pingreq)).await.expect("command failed");
+        assert_eq!(srv.events.recv().await, Some(Event::send(0, Packet::Pingreq)));
+        assert_eq!(srv.events.recv().await, Some(Event::recv(0, Packet::Pingresp)));
+
+        // Wait for the server to finish
+        assert_eq!(srv.events.recv().await, Some(Event::done()));
     });
 }

@@ -116,7 +116,7 @@ pub(crate) struct Client<'s> {
     /// Dump targets.
     dumps: Dump,
     /// Send events to lib user
-    event_s: Option<Sender<Event>>,
+    event_s: SendEvent,
     /// Protocol-specific ack-timeout config.
     ack_timeouts_conf: (Option<Duration>, Option<Duration>),
     /// Pending acks will timeout after that duration.
@@ -154,7 +154,7 @@ impl Client<'_> {
                         sess: &Arc<Mutex<Sessions>>,
                         dumps: &Dump,
                         conf: &Conf,
-                        event_s: &Option<Sender<Event>>,
+                        event_s: &SendEvent,
                         cev_s: Sender<ClientEv>,
                         cev_r: Receiver<ClientEv>,
                         mev_s: &Sender<MainEv>) {
@@ -177,11 +177,11 @@ impl Client<'_> {
                    sessions: Arc<Mutex<Sessions>>,
                    dumps: Dump,
                    conf: Conf,
-                   mut event_s: Option<Sender<Event>>,
+                   mut event_s: SendEvent,
                    cev_s: Sender<ClientEv>,
                    cev_r: Receiver<ClientEv>) {
         info!("C{}: Connection from {:?}", id, socket);
-        option_send(&mut event_s, Event::ClientStart(id), "Event");
+        event_s.send(Event::conn(id));
         let (read, write) = socket.split();
         let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::usize::MAX);
         let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
@@ -235,7 +235,7 @@ impl Client<'_> {
             let mut sm = client.sessions.lock().await;
             sm.close(&client, sess);
         }
-        option_send(&mut client.event_s, Event::ClientStop(client.id), "Event")
+        client.event_s.send(Event::discon(id))
     }
 
     /// Frame bytes from the socket as Decode MQTT packets, and forwards them as `ClientEv`s.
@@ -274,6 +274,7 @@ impl Client<'_> {
     /// Receive packets from client.
     async fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
+        self.event_s.send(Event::recv(self.id, pkt.clone()));
         self.dumps.dump(self.id, &self.name, "C", &pkt).await;
         self.count_pkt += 1;
         match (pkt, self.conn) {
@@ -371,6 +372,7 @@ impl Client<'_> {
     /// Send packets to client.
     async fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
+        self.event_s.send(Event::send(self.id, pkt.clone()));
         self.dumps.dump(self.id, &self.name, "S", &pkt).await;
         self.writer.send(pkt).await?;
         self.writer.flush().await.map_err(|e| e.into())
@@ -405,12 +407,11 @@ impl Client<'_> {
     async fn handle_check_qos(&mut self, reftime: Instant) -> Result<(), Error> {
         let sess = self.session.as_mut().expect("unwrap session");
         trace!("C{}: check Qos acks {:?}", self.id, sess.qos1);
-        let id = self.id;
         let addr = self.addr.clone();
         // FIXME: Should be able to just move pkt.
         for (pid, (deadline, pkt)) in sess.qos1.iter() {
             if *deadline > reftime {
-                warn!("C{}: Timeout receiving ack {:?}, resending packet", id, pid);
+                warn!("C{}: Timeout receiving ack {:?}, resending packet", self.id, pid);
                 addr.send(ClientEv::PktOut(pkt.clone())).await
             }
         }

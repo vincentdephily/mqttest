@@ -1,5 +1,5 @@
-use crate::{ConnId,
-            mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes}};
+use crate::{mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes},
+            ConnId};
 use futures::prelude::*;
 use log::*;
 use serde::{Deserialize, Serialize};
