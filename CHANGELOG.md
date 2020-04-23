@@ -12,9 +12,6 @@
 * Waiting for the server to finish is now done via `Mqttest::finish()` method
   - This returns some basic runtime statistics
 
-MSRV goes up to 1.42 for running `mqttest`'s own tests, but remains at 1.39 for building and using
-in your own unittests.
-
 # 0.2.0 (2020-04-06)
 
 Cater for the library usecase.

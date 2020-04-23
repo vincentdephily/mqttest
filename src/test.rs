@@ -3,6 +3,7 @@
 // TODO: convert to example
 
 use crate::{test::client::client, *};
+use assert_matches::*;
 use mqttrs::*;
 use std::future::Future;
 use tokio::{runtime::Builder, spawn};
@@ -98,11 +99,11 @@ fn cmd_sendping() {
 
         // Start client and wait for handshake
         spawn(client("mqttest", srv.port, 200));
-        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Connect(_)))));
-        assert!(matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_)))));
-        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Publish(_)))));
-        assert!(matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Subscribe(_)))));
-        assert!(matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_)))));
+        assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Connect(_))));
+        assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_))));
+        assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Publish(_))));
+        assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Subscribe(_))));
+        assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_))));
 
         // Send ping and wait for pong
         srv.commands.send(Command::SendPacket(0, Packet::Pingreq)).expect("command failed");

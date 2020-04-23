@@ -31,6 +31,7 @@ tokio-util = { version = "0.3.1", features = ["codec"] }
 
 [dev-dependencies]
 env_logger = "0.7.0"
+assert_matches = "1.3.0"
 
 [[bin]]
 required-features = ["cli"]
