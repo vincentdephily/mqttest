@@ -8,7 +8,9 @@
   - Client connect/disconnect
   - Packets sent/received
   - Server termination
-* Server can be configured to only send certain kinds of events
+* Events can be filtered via `Conf::event_*()` builders
+* Waiting for the server to finish is now done via `Mqttest::finish()` method
+  - This returns some basic runtime statistics
 
 MSRV goes up to 1.42 for running `mqttest`'s own tests, but remains at 1.39 for building and using
 in your own unittests.

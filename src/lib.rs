@@ -31,11 +31,8 @@ use std::{collections::HashMap,
           io::{Error, ErrorKind},
           ops::RangeInclusive,
           sync::Arc,
-          time::Duration};
-use tokio::{net::TcpListener,
-            spawn,
-            sync::mpsc::{channel, Receiver, Sender},
-            task::JoinHandle};
+          time::{Duration, Instant}};
+use tokio::{net::TcpListener, spawn, sync::mpsc::*};
 
 pub use dump::*;
 pub use messages::*;
@@ -284,13 +281,10 @@ async fn send_client(clients: &mut HashMap<usize, Sender<ClientEv>>, idx: usize,
 pub struct Mqttest {
     /// Tcp port that the server is listening on.
     pub port: u16,
-    /// `.await` this future to wait for the server to finish.
-    // TODO deprecate in favor of events.recv() and a helper function
-    pub report: JoinHandle<Vec<ConnInfo>>,
     /// Send a [`Command`] to the running server.
     ///
     /// [`Command`]: enum.Command.html
-    pub commands: Sender<Command>,
+    pub commands: UnboundedSender<Command>,
     /// Receive [`Event`]s from the running server.
     ///
     /// By default, all [`EventKind`]s are sent. See [`event_on()`]/[`event_off()`]/[`event_reset()`] to configure.
@@ -314,7 +308,7 @@ impl Mqttest {
 
         // Basic init
         let (port, listener) = listen(&conf.ports).await?;
-        let (cmd_s, mut cmd_r) = channel(1000);
+        let (cmd_s, mut cmd_r) = unbounded_channel();
         let (event_s, event_r) = channel(1000);
         let mut event_s = SendEvent::new(event_s, conf.event_filter.clone(), conf.event_default);
         let (mev_s, mut mev_r) = channel(10);
@@ -322,9 +316,9 @@ impl Mqttest {
         let subs = Arc::new(Mutex::new(Subs::new()));
         let sess = Arc::new(Mutex::new(Sessions::new()));
         let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
-        let mut conns: Vec<ConnInfo> = Vec::new();
         let mut id = 0;
         let mut clients = HashMap::new();
+        let start_time = Instant::now();
 
         // Task to accept new connections and forward them to the main event loop
         let mut mev_s2 = mev_s.clone();
@@ -350,15 +344,15 @@ impl Mqttest {
                     break;
                 }
             }
+            trace!("cmd task finished");
         });
 
         // Main event loop task
-        let report = spawn(async move {
+        spawn(async move {
             while let Some(ev) = mev_r.next().await {
                 info!("{:?}", ev);
                 match ev {
                     MainEv::Accept(Ok(socket)) => {
-                        conns.push(ConnInfo {});
                         let (cev_s, cev_r) = channel::<ClientEv>(10);
                         clients.insert(id, cev_s.clone());
                         Client::spawn(id, socket, &subs, &sess, &dumps, &conf, &event_s, cev_s, cev_r, &mev_s);
@@ -383,17 +377,33 @@ impl Mqttest {
                     }
                 }
             }
-            event_s.send(Event::done());
-            conns
+            let stats = ServerStats { elapsed: Instant::now() - start_time, conn_count: id };
+            event_s.send(Event::Done(None, stats));
+            trace!("main task finished");
         });
 
         // Server is ready
-        Ok(Mqttest { port, report, commands: cmd_s, events: event_r })
+        Ok(Mqttest { port, commands: cmd_s, events: event_r })
+    }
+
+    /// Wait for the server to finish, and retrieve the final stats
+    ///
+    /// This will return `None` if you've already manually received `Event::Done`.
+    pub async fn finish(mut self) -> Option<ServerStats> {
+        while let Some(e) = self.events.recv().await {
+            if let Event::Done(_, stats) = e {
+                return Some(stats)
+            }
+        }
+        None
     }
 }
 
-/// Statistics and packet dumps collected about one connection
-///
-/// Currently just an empty placeholder, but you can still deduce the number of connections from the
-/// enclosing `Vec`.
-pub struct ConnInfo {}
+#[derive(Debug, Default)]
+/// Statistics collected during the server run
+pub struct ServerStats {
+    /// Run duration
+    pub elapsed: Duration,
+    /// Total number of connections
+    pub conn_count: usize,
+}

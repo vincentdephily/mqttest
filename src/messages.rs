@@ -1,7 +1,7 @@
 //! This module contains definition of messages used internally between the main server loop and the
 //! client tasks, as well as in the public API between the server struct and the caller.
 
-use crate::{client::SessionData, mqtt::*};
+use crate::{client::SessionData, mqtt::*, ServerStats};
 use log::*;
 use std::{collections::HashMap, time::Instant};
 use tokio::{net::TcpStream,
@@ -62,7 +62,7 @@ pub enum Event {
     /// [`Packet`]: ../mqttrs/struct.Packet.html
     Send(Option<Instant>, ConnId, Packet),
     /// Whole server stopped
-    Done(Option<Instant>),
+    Done(Option<Instant>, ServerStats),
 }
 impl Event {
     pub fn now(self) -> Self {
@@ -74,7 +74,7 @@ impl Event {
             Self::Discon(_, i) => Self::Discon(Some(t), i),
             Self::Recv(_, i, p) => Self::Recv(Some(t), i, p),
             Self::Send(_, i, p) => Self::Send(Some(t), i, p),
-            Self::Done(_) => Self::Done(Some(t)),
+            Self::Done(_, s) => Self::Done(Some(t), s),
         }
     }
     pub fn conn(i: ConnId) -> Self {
@@ -89,9 +89,6 @@ impl Event {
     pub fn send(i: ConnId, p: Packet) -> Self {
         Self::Send(None, i, p)
     }
-    pub fn done() -> Self {
-        Self::Done(None)
-    }
     pub fn kind(&self) -> EventKind {
         match self {
             Self::Conn(..) => EventKind::Conn,
@@ -105,14 +102,12 @@ impl Event {
 impl PartialEq<Event> for Event {
     /// Timestamps (first field) compares equal if any of them is `None`.
     fn eq(&self, e: &Event) -> bool {
-        let t =
-            |t1: &Option<Instant>, t2: &Option<Instant>| t1.is_none() || t2.is_none() || t1 == t2;
+        let t = |a: &Option<Instant>, b: &Option<Instant>| a.is_none() || b.is_none() || a == b;
         match (self, e) {
             (Self::Conn(t1, i1), Self::Conn(t2, i2)) if i1 == i2 => t(t1, t2),
             (Self::Discon(t1, i1), Self::Discon(t2, i2)) if i1 == i2 => t(t1, t2),
             (Self::Recv(t1, i1, p1), Self::Recv(t2, i2, p2)) if i1 == i2 && p1 == p2 => t(t1, t2),
             (Self::Send(t1, i1, p1), Self::Send(t2, i2, p2)) if i1 == i2 && p1 == p2 => t(t1, t2),
-            (Self::Done(t1), Self::Done(t2)) => t(t1, t2),
             _ => false,
         }
     }
@@ -133,7 +128,7 @@ pub enum EventKind {
 
 /// Logging/filtering/short-circuiting wrapper for `Option<Sender<Event>>`.
 ///
-/// * Filter events by kind before sending
+/// * Filter events by kind before sending (Event::Done is always sent)
 /// * Set the timestamp
 /// * warn!() when the channel is full
 /// * debug!() once and never send again if there is no Receiver

@@ -99,7 +99,7 @@ fn block_on<T>(f: impl Future<Output = T>) -> T {
 /// Example unittest. Bring your own client.
 #[test]
 fn connect() {
-    let conns: Vec<ConnInfo> = block_on(async {
+    let stats = block_on(async {
         // Create a server config
         let conf = Conf::new().max_connect(1);
         // Start the server
@@ -107,10 +107,10 @@ fn connect() {
         // Start your client on the port that the server selected
         client::start(srv.port).await.expect("Client failure");
         // Wait for the server to finish
-        srv.fut.await.unwrap()
+        srv.finish().await.unwrap()
     });
     // Check run results
-    assert_eq!(1, conns.len());
+    assert_eq!(1, stats.conn_count
 }
 ```
 
