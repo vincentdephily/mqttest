@@ -309,7 +309,7 @@ pub struct Mqttest {
     /// [`Event`]: enum.Event.html
     pub events: Receiver<Event>,
     /// Handle to the main task
-    done: JoinHandle<ServerStats>,
+    done: JoinHandle<Finish>,
 }
 impl Mqttest {
     /// Initialize a server with the given config, and start handling connections.
@@ -392,7 +392,7 @@ impl Mqttest {
                 }
             }
             trace!("main task finished");
-            ServerStats { elapsed: Instant::now() - start_time, conn_count: id, events: vec![] }
+            Finish { elapsed: Instant::now() - start_time, conn_count: id, events: vec![] }
         });
 
         // Server is ready
@@ -400,7 +400,7 @@ impl Mqttest {
     }
 
     /// Wait for the server to finish, and retrieve the final stats
-    pub async fn finish(mut self) -> ServerStats {
+    pub async fn finish(mut self) -> Finish {
         let mut stats = self.done.await.expect("failed join");
         while let Ok(e) = self.events.try_recv() {
             stats.events.push(e);
@@ -409,14 +409,14 @@ impl Mqttest {
     }
 }
 
-#[derive(Debug, Default)]
-/// Statistics collected during the server run
+#[derive(Debug)]
+/// Statistics and events collected during the server run
 // TODO: global and per-conn packet/bytes
-pub struct ServerStats {
+pub struct Finish {
     /// Run duration
     pub elapsed: Duration,
+    /// Remaining events (that weren't manually received)
+    pub events: Vec<Event>,
     /// Total number of connections
     pub conn_count: usize,
-    /// Remaining events (that weren't received during the server run)
-    pub events: Vec<Event>,
 }

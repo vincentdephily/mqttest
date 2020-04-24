@@ -136,7 +136,7 @@ fn events_full() {
         for _ in 0..=9 {
             assert_matches!(srv.events.recv().await, Some(Event::Send(_, _, _)));
         }
-        assert_matches!(srv.finish().await, ServerStats{events:e, ..} if e.is_empty());
+        assert_matches!(srv.finish().await, Finish{events:e, ..} if e.is_empty());
         cli.await.expect("join failure").expect("client failure");
     })
 }
