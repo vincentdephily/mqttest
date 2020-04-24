@@ -103,6 +103,7 @@ pub async fn client(id: impl std::fmt::Display, port: u16, wait: u64) -> Result<
             match p {
                 Some(Ok(Packet::Pingreq)) => frame.send(Packet::Pingresp).await?,
                 Some(Ok(Packet::Publish(_))) => (),
+                None => break,
                 o => Err(format!("Unexpected {:?}", o))?,
             }
         }

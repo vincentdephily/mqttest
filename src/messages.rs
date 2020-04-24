@@ -1,7 +1,7 @@
 //! This module contains definition of messages used internally between the main server loop and the
 //! client tasks, as well as in the public API between the server struct and the caller.
 
-use crate::{client::SessionData, mqtt::*, ServerStats};
+use crate::{client::SessionData, mqtt::*};
 use log::*;
 use std::{collections::HashMap, time::Instant};
 use tokio::{net::TcpStream,
@@ -61,8 +61,6 @@ pub enum Event {
     ///
     /// [`Packet`]: ../mqttrs/struct.Packet.html
     Send(Option<Instant>, ConnId, Packet),
-    /// Whole server stopped
-    Done(Option<Instant>, ServerStats),
 }
 impl Event {
     pub fn now(self) -> Self {
@@ -74,7 +72,6 @@ impl Event {
             Self::Discon(_, i) => Self::Discon(Some(t), i),
             Self::Recv(_, i, p) => Self::Recv(Some(t), i, p),
             Self::Send(_, i, p) => Self::Send(Some(t), i, p),
-            Self::Done(_, s) => Self::Done(Some(t), s),
         }
     }
     pub fn conn(i: ConnId) -> Self {
@@ -95,7 +92,6 @@ impl Event {
             Self::Discon(..) => EventKind::Discon,
             Self::Recv(..) => EventKind::Recv,
             Self::Send(..) => EventKind::Send,
-            Self::Done(..) => EventKind::Done,
         }
     }
 }
@@ -123,12 +119,11 @@ pub enum EventKind {
     Discon,
     Recv,
     Send,
-    Done,
 }
 
 /// Logging/filtering/short-circuiting wrapper for `Option<Sender<Event>>`.
 ///
-/// * Filter events by kind before sending (Event::Done is always sent)
+/// * Filter events by kind before sending
 /// * Set the timestamp
 /// * warn!() when the channel is full
 /// * debug!() once and never send again if there is no Receiver

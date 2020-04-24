@@ -32,7 +32,7 @@ use std::{collections::HashMap,
           ops::RangeInclusive,
           sync::Arc,
           time::{Duration, Instant}};
-use tokio::{net::TcpListener, spawn, sync::mpsc::*};
+use tokio::{net::TcpListener, spawn, sync::mpsc::*, task::JoinHandle};
 
 pub use dump::*;
 pub use messages::*;
@@ -95,6 +95,7 @@ pub struct Conf {
     sess_expire: Vec<Option<Duration>>,
     event_filter: HashMap<EventKind, bool>,
     event_default: bool,
+    result_buffer: usize,
 }
 impl Conf {
     /// Initialize a default config
@@ -114,7 +115,8 @@ impl Conf {
                max_time: vec![None],
                sess_expire: vec![None],
                event_filter: HashMap::new(),
-               event_default: true }
+               event_default: true,
+               result_buffer: 1000 }
     }
     /// Range of ports to try to listen on, stopping at the first successful one) (defaults to
     /// `1883..=2000`)
@@ -249,6 +251,17 @@ impl Conf {
         self.event_default = def;
         self
     }
+    /// Limit the number of event and stats that will be buffered by the server (defult 1000)
+    ///
+    /// This limits avoids unbounded memory use if the server receives a lot of packets or
+    /// connections. To avoid reaching the limit (a warning will be logged), either raise the limit
+    /// here or consume [`Event`] while the server is running.
+    ///
+    /// [`Event`]: enum.Event.html
+    pub fn result_buffer(mut self, c: usize) -> Self {
+        self.result_buffer = c;
+        self
+    }
 }
 
 /// Listen on the first available TCP port.
@@ -268,7 +281,7 @@ async fn listen(ports: &RangeInclusive<u16>) -> Result<(u16, TcpListener), Error
 
 /// Checked send to client task.
 async fn send_client(clients: &mut HashMap<usize, Sender<ClientEv>>, idx: usize, msg: ClientEv) {
-    debug!("Sending {:?} to {}", msg, idx);
+    trace!("Sending {:?} to {}", msg, idx);
     if match clients.get_mut(&idx) {
         Some(chan) => chan.send(msg).await.is_err(),
         None => true,
@@ -295,6 +308,8 @@ pub struct Mqttest {
     /// [`event_reset()`]: struct.Conf.html#method.event_reset
     /// [`Event`]: enum.Event.html
     pub events: Receiver<Event>,
+    /// Handle to the main task
+    done: JoinHandle<ServerStats>,
 }
 impl Mqttest {
     /// Initialize a server with the given config, and start handling connections.
@@ -302,15 +317,14 @@ impl Mqttest {
     /// As soon as this function returns, the server is ready to accept connections. If the server
     /// is configured with a stop condition, you can wait for it using `Mqttest.fut`.
     // FIXME: droping the Mqttest struct should terminate all futures
-    // TOOO: configurable cmd/event channel size
     pub async fn start(conf: Conf) -> Result<Mqttest, Error> {
         debug!("Start {:?}", conf);
 
         // Basic init
         let (port, listener) = listen(&conf.ports).await?;
         let (cmd_s, mut cmd_r) = unbounded_channel();
-        let (event_s, event_r) = channel(1000);
-        let mut event_s = SendEvent::new(event_s, conf.event_filter.clone(), conf.event_default);
+        let (event_s, event_r) = channel(conf.result_buffer);
+        let event_s = SendEvent::new(event_s, conf.event_filter.clone(), conf.event_default);
         let (mev_s, mut mev_r) = channel(10);
         let max_connect = conf.max_connect;
         let subs = Arc::new(Mutex::new(Subs::new()));
@@ -348,7 +362,7 @@ impl Mqttest {
         });
 
         // Main event loop task
-        spawn(async move {
+        let done = spawn(async move {
             while let Some(ev) = mev_r.next().await {
                 info!("{:?}", ev);
                 match ev {
@@ -377,33 +391,32 @@ impl Mqttest {
                     }
                 }
             }
-            let stats = ServerStats { elapsed: Instant::now() - start_time, conn_count: id };
-            event_s.send(Event::Done(None, stats));
             trace!("main task finished");
+            ServerStats { elapsed: Instant::now() - start_time, conn_count: id, events: vec![] }
         });
 
         // Server is ready
-        Ok(Mqttest { port, commands: cmd_s, events: event_r })
+        Ok(Mqttest { port, commands: cmd_s, events: event_r, done })
     }
 
     /// Wait for the server to finish, and retrieve the final stats
-    ///
-    /// This will return `None` if you've already manually received `Event::Done`.
-    pub async fn finish(mut self) -> Option<ServerStats> {
-        while let Some(e) = self.events.recv().await {
-            if let Event::Done(_, stats) = e {
-                return Some(stats)
-            }
+    pub async fn finish(mut self) -> ServerStats {
+        let mut stats = self.done.await.expect("failed join");
+        while let Ok(e) = self.events.try_recv() {
+            stats.events.push(e);
         }
-        None
+        stats
     }
 }
 
 #[derive(Debug, Default)]
 /// Statistics collected during the server run
+// TODO: global and per-conn packet/bytes
 pub struct ServerStats {
     /// Run duration
     pub elapsed: Duration,
     /// Total number of connections
     pub conn_count: usize,
+    /// Remaining events (that weren't received during the server run)
+    pub events: Vec<Event>,
 }
