@@ -317,6 +317,8 @@ impl Client<'_> {
             },
             // Ping request
             (Packet::Pingreq, true) => self.addr.send(ClientEv::PktOut(pingresp())).await,
+            // Ping response
+            (Packet::Pingresp, true) => (),
             // Puback: cancel the resend timer if the ack was expected, die otherwise.
             (Packet::Puback(pid), true) => {
                 let sess = self.session.as_mut().expect("unwrap session");

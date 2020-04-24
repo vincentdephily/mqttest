@@ -109,6 +109,9 @@ fn cmd_sendping() {
         srv.commands.send(Command::SendPacket(0, Packet::Pingreq)).expect("command failed");
         assert_eq!(srv.events.recv().await, Some(Event::send(0, Packet::Pingreq)));
         assert_eq!(srv.events.recv().await, Some(Event::recv(0, Packet::Pingresp)));
+        srv.commands.send(Command::SendPacket(0, Packet::Pingreq)).expect("command failed");
+        assert_eq!(srv.events.recv().await, Some(Event::send(0, Packet::Pingreq)));
+        assert_eq!(srv.events.recv().await, Some(Event::recv(0, Packet::Pingresp)));
 
         // Wait for the server to finish
         srv.finish().await
