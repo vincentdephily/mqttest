@@ -89,6 +89,7 @@ pub struct Conf {
     idprefix: String,
     userpass: Option<String>,
     max_connect: usize,
+    max_runtime: Option<Duration>,
     max_pkt: Vec<Option<usize>>,
     max_pkt_delay: Option<Duration>,
     max_time: Vec<Option<Duration>>,
@@ -110,6 +111,7 @@ impl Conf {
                idprefix: "".into(),
                userpass: None,
                max_connect: std::usize::MAX,
+               max_runtime: None,
                max_pkt: vec![None],
                max_pkt_delay: None,
                max_time: vec![None],
@@ -196,6 +198,13 @@ impl Conf {
     /// Only accept up to N connections, and stop the server after established connections close.
     pub fn max_connect(mut self, c: impl Into<Option<usize>>) -> Self {
         self.max_connect = c.into().unwrap_or(std::usize::MAX);
+        self
+    }
+    /// Stop the server and any existing connections after a certain time.
+    ///
+    /// This just closes the TCP stream, without sending an mqtt disconnect packet.
+    pub fn max_runtime(mut self, d: impl Into<OptMsDuration>) -> Self {
+        self.max_runtime = d.into().0;
         self
     }
     /// Disconnect the Nth client after receiving that many packets.
@@ -360,6 +369,15 @@ impl Mqttest {
             }
             trace!("cmd task finished");
         });
+
+        // Task to kill the server
+        if let Some(d) = conf.max_runtime {
+            let mut mev_s4 = mev_s.clone();
+            spawn(async move {
+                tokio::time::delay_for(d).await;
+                let _ = mev_s4.send(MainEv::Cmd(Command::Stop)).await;
+            });
+        }
 
         // Main event loop task
         let done = spawn(async move {

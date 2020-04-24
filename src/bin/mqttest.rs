@@ -93,6 +93,9 @@ struct Opt {
     /// Only accept up to N connections, and stop the server after established connections close.
     #[structopt(long = "max-connect", short = "c", value_name = "count", default_value = "-")]
     max_connect: OptUsize,
+    /// Terminate the server after a certain time.
+    #[structopt(long = "max-runtime", value_name = "ms", default_value = "-")]
+    max_runtime: OptDuration,
     /// Disconnect the client after receiving that many packets.
     ///
     /// Use "-" for no disconnect. Multiple values apply to subsequent connections.
@@ -156,6 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           .idprefix(opt.idprefix)
                           .userpass(opt.userpass)
                           .max_connect(opt.max_connect.0)
+                          .max_runtime(opt.max_runtime.0)
                           .max_pkt(opt.max_pkt.into_iter().map(|d| d.0).collect())
                           .max_pkt_delay(opt.max_pkt_delay.0)
                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
