@@ -13,7 +13,7 @@
 //! [`Mqttest`]: struct.Mqttest.html
 //! [ConnInfo]: struct.ConnInfo.html
 //! [start()]: struct.Mqttest.html#method.start
-//! [`test.rs`]: ../src/mqttest/test.rs.html
+//! [`test.rs`]: https://github.com/vincentdephily/mqttest/blob/master/src/test.rs
 
 mod client;
 mod dump;
@@ -21,7 +21,7 @@ mod messages;
 mod mqtt;
 mod pubsub;
 mod session;
-#[cfg(any(test, doc))]
+#[cfg(test)]
 mod test;
 
 use crate::{client::*, dump::*, messages::*, pubsub::*, session::*};
