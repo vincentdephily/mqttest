@@ -319,6 +319,9 @@ pub struct Mqttest {
     pub events: Receiver<Event>,
     /// Handle to the main task
     done: JoinHandle<Finish>,
+    /// RAII struct to send a stop command the server
+    #[allow(dead_code)]
+    sendondrop: SendOnDrop,
 }
 impl Mqttest {
     /// Initialize a server with the given config, and start handling connections.
@@ -378,6 +381,7 @@ impl Mqttest {
                 let _ = mev_s4.send(MainEv::Cmd(Command::Stop)).await;
             });
         }
+        let sendondrop = SendOnDrop(mev_s.clone());
 
         // Main event loop task
         let done = spawn(async move {
@@ -387,18 +391,23 @@ impl Mqttest {
                     MainEv::Accept(Ok(socket)) => {
                         let (cev_s, cev_r) = channel::<ClientEv>(10);
                         clients.insert(id, cev_s.clone());
-                        Client::spawn(id, socket, &subs, &sess, &dumps, &conf, &event_s, cev_s, cev_r, &mev_s);
+                        Client::spawn(id, socket, &subs, &sess, &dumps, &conf, &event_s, cev_s,
+                                      cev_r, &mev_s);
                         id += 1;
                     },
                     MainEv::Accept(Err(e)) => error!("Failed to accept socket: {:?}", e),
                     MainEv::Cmd(Command::Disconnect(i)) => {
-                        send_client(&mut clients, i, ClientEv::Disconnect(String::from("cmd"))).await
+                        send_client(&mut clients,
+                                    i,
+                                    ClientEv::Disconnect(String::from("Cmd::Disconnect"))).await
                     },
                     MainEv::Cmd(Command::SendPacket(i, p)) => {
                         send_client(&mut clients, i, ClientEv::PktOut(p)).await
                     },
                     MainEv::Cmd(Command::Stop) => {
-                        // FIXME: disconnect all clients
+                        for cev_s in clients.values_mut() {
+                            let _ = cev_s.send(ClientEv::Disconnect(String::from("Cmd::Stop")));
+                        }
                         break;
                     },
                     MainEv::Finish(idx) => {
@@ -406,7 +415,7 @@ impl Mqttest {
                         if id >= max_connect && clients.is_empty() {
                             break;
                         }
-                    }
+                    },
                 }
             }
             trace!("main task finished");
@@ -414,7 +423,7 @@ impl Mqttest {
         });
 
         // Server is ready
-        Ok(Mqttest { port, commands: cmd_s, events: event_r, done })
+        Ok(Mqttest { port, commands: cmd_s, events: event_r, done, sendondrop })
     }
 
     /// Wait for the server to finish, and retrieve the final stats
@@ -424,6 +433,14 @@ impl Mqttest {
             stats.events.push(e);
         }
         stats
+    }
+}
+
+/// Send `MainEv::Cmd(Command::Stop)` when this gets dropped.
+struct SendOnDrop(Sender<MainEv>);
+impl Drop for SendOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(MainEv::Cmd(Command::Stop));
     }
 }
 

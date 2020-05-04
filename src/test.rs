@@ -41,7 +41,6 @@ fn connect() {
 }
 
 #[test]
-#[ignore] // FIXME fix bug and enable test
 fn stop_on_drop() {
     block_on(async {
         // Start a server but drop the Mqttest struct
