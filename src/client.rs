@@ -17,13 +17,32 @@ use tokio::{net::{tcp::{ReadHalf, WriteHalf},
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 
-/// Wrapper around `futures::future::AbortHandle` that aborts when dropped.
-struct AbortOnDrop(pub AbortHandle);
-impl Drop for AbortOnDrop {
+/// Wrapper around a spawned Future.
+///
+/// * Dropping the ControledTask aborts the future
+/// * `is_done()` can be used to test for completion
+struct ControledTask(pub AbortHandle, pub Arc<Mutex<()>>);
+impl ControledTask {
+    pub fn spawn(fut: impl Future<Output = ()> + Send + 'static) -> Self {
+        let m = Arc::new(Mutex::new(()));
+        let m2 = m.clone();
+        let (f, h) = abortable(async move {
+            m2.lock().await;
+            fut.await
+        });
+        spawn(f.map(drop));
+        Self(h, m)
+    }
+    pub fn is_done(&self) -> bool {
+        self.1.try_lock().is_some()
+    }
+}
+impl Drop for ControledTask {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
+
 
 /// Allows sending a `ClientEv` to a `Client`.
 #[derive(Clone)]
@@ -36,25 +55,17 @@ impl Addr {
         }
     }
 
-    /// Wait until `Instant` and then send `ClientEv` to `Addr`.
-    async fn send_at_async(addr: Addr, deadline: Instant, msg: ClientEv) {
-        trace!("send_at {:?} {:?} {:?}", deadline, addr, msg);
-        delay_until(deadline.into()).await;
-        addr.send(msg).await;
-    }
-
     /// Schedule `ClientEv` to be sent to `Addr` at `Instant`.
-    fn send_at(&self, deadline: Instant, msg: ClientEv) {
-        spawn(Self::send_at_async(self.clone(), deadline, msg).map(drop));
-    }
-
-    /// Schedule `ClientEv` to be sent to `Addr` at `Instant`, returning a andle that will abort sending
-    /// if dropped.
+    ///
+    /// The returned `ControledTask` must be kept alive for the send to succeed.
     #[must_use]
-    fn send_at_abort(&self, deadline: Instant, msg: ClientEv) -> AbortOnDrop {
-        let (f, h) = abortable(Self::send_at_async(self.clone(), deadline, msg));
-        spawn(f.map(drop));
-        AbortOnDrop(h)
+    fn send_at(&self, deadline: Instant, msg: ClientEv) -> ControledTask {
+        let addr = self.clone();
+        ControledTask::spawn(async move {
+            trace!("send_at {:?} {:?} {:?}", deadline, addr, msg);
+            delay_until(deadline.into()).await;
+            addr.send(msg).await;
+        })
     }
 }
 impl PartialEq for Addr {
@@ -139,7 +150,9 @@ pub(crate) struct Client<'s> {
     /// Override session expiry time.
     pub sess_expire: Option<Duration>,
     /// Handle to future sending the next ClientEv::CheckQos.
-    qos1_check: Option<AbortOnDrop>,
+    qos1_check: Option<ControledTask>,
+    /// Handles to various futures that should abort when the client dies.
+    tasks: Vec<ControledTask>,
     /// Disconnect after that many received packets.
     max_pkt: usize,
     /// Delay before max_pkt disconnection.
@@ -203,14 +216,14 @@ impl Client<'_> {
                                   session: None,
                                   sess_expire,
                                   qos1_check: None,
+                                  tasks: vec![],
                                   max_pkt,
                                   max_pkt_delay: conf.max_pkt_delay,
                                   count_pkt: 0 };
 
         // Setup disconnect timer.
         if let Some(m) = conf.max_time[id as usize % conf.max_time.len()] {
-            client.addr
-                  .send_at(Instant::now() + m, ClientEv::Disconnect(format!("max time {:?}", m)))
+            client.send_in(m, ClientEv::Disconnect(format!("max time {:?}", m)));
         }
 
         // Initialize json dump target.
@@ -236,6 +249,12 @@ impl Client<'_> {
             sm.close(&client, sess);
         }
         client.event_s.send(Event::discon(id))
+    }
+
+    /// Send `ClientEv` after a delay, while keeping track of the `ControledTask`s.
+    fn send_in(&mut self, delay: Duration, msg: ClientEv) {
+        self.tasks.retain(|v| v.is_done());
+        self.tasks.push(self.addr.send_at(Instant::now() + delay, msg));
     }
 
     /// Frame bytes from the socket as Decode MQTT packets, and forwards them as `ClientEv`s.
@@ -337,8 +356,7 @@ impl Client<'_> {
                 match p.qospid {
                     QosPid::AtMostOnce => (),
                     QosPid::AtLeastOnce(pid) => {
-                        let d = Instant::now() + self.ack_delay;
-                        self.addr.send_at(d, ClientEv::PktOut(puback(pid)));
+                        self.send_in(self.ack_delay, ClientEv::PktOut(puback(pid)))
                     },
                     QosPid::ExactlyOnce(_) => panic!("ExactlyOnce not supported yet"),
                 }
@@ -354,8 +372,8 @@ impl Client<'_> {
                     sess.subs.insert(topic_path.clone(), qos);
                     codes.push(SubscribeReturnCodes::Success(qos));
                 }
-                let d = Instant::now() + self.ack_delay;
-                self.addr.send_at(d, ClientEv::PktOut(suback(pid, codes)));
+                drop(subs);
+                self.send_in(self.ack_delay, ClientEv::PktOut(suback(pid, codes)));
             },
             (other, _) => {
                 return Err(Error::new(ErrorKind::InvalidData, format!("Unhandled {:?}", other)))
@@ -364,7 +382,7 @@ impl Client<'_> {
         if self.count_pkt >= self.max_pkt {
             let reason = format!("max packets {:?} {:?}", self.max_pkt, self.max_pkt_delay);
             match self.max_pkt_delay {
-                Some(d) => self.addr.send_at(Instant::now() + d, ClientEv::Disconnect(reason)),
+                Some(d) => self.send_in(d, ClientEv::Disconnect(reason)),
                 None => self.addr.send(ClientEv::Disconnect(reason)).await,
             }
         }
@@ -399,7 +417,7 @@ impl Client<'_> {
 
             // Schedule the next check for timedout acks.
             if self.qos1_check.is_none() && self.ack_timeout < FOREVER {
-                self.qos1_check = Some(self.addr.send_at_abort(deadline, ClientEv::CheckQos));
+                self.qos1_check = Some(self.addr.send_at(deadline, ClientEv::CheckQos));
             }
         }
         self.handle_pkt_out(pkt).await
@@ -419,7 +437,7 @@ impl Client<'_> {
         }
         sess.qos1.retain(|_pid, (deadline, _pkt)| *deadline <= reftime);
         if let Some(deadline) = sess.qos1.values().map(|(d, _)| d).min() {
-            self.qos1_check = Some(self.addr.send_at_abort(*deadline, ClientEv::CheckQos));
+            self.qos1_check = Some(self.addr.send_at(*deadline, ClientEv::CheckQos));
         }
         Ok(())
     }
