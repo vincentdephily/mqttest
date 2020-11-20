@@ -17,8 +17,6 @@ pub struct DumpMeta<'a> {
     pub ts: String,
     /// Connection id/counter
     pub con: ConnId,
-    /// MQTT Client id
-    pub id: &'a str,
     /// Packet origin: from (C)lient or from (S)erver.
     pub from: &'a str,
     /// Parsed MQTT packet
@@ -332,11 +330,11 @@ impl Dump {
     }
 
     /// Serialize packet/metadata as json and asynchronously write it to the files.
-    pub async fn dump<'s>(&'s self, con: ConnId, id: &str, from: &str, pkt: &Packet) {
+    pub async fn dump<'s>(&'s self, con: ConnId, from: &str, pkt: &Packet) {
         // Build DumpMqtt struct
         let ts = Dump::now_str();
         let pkt = DumpMqtt::new(pkt, &self.decode_cmd);
-        let e = to_string(&DumpMeta { ts, con, id, from, pkt }).unwrap();
+        let e = to_string(&DumpMeta { ts, con, from, pkt }).unwrap();
 
         // Send it to all writers
         for c in self.chans.iter() {

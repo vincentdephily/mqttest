@@ -294,7 +294,7 @@ impl Client<'_> {
     async fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
         self.event_s.send(Event::recv(self.id, pkt.clone()));
-        self.dumps.dump(self.id, &self.name, "C", &pkt).await;
+        self.dumps.dump(self.id, "C", &pkt).await;
         self.count_pkt += 1;
         match (pkt, self.conn) {
             // Connection
@@ -393,7 +393,7 @@ impl Client<'_> {
     async fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
         self.event_s.send(Event::send(self.id, pkt.clone()));
-        self.dumps.dump(self.id, &self.name, "S", &pkt).await;
+        self.dumps.dump(self.id, "S", &pkt).await;
         self.writer.send(pkt).await?;
         self.writer.flush().await.map_err(|e| e.into())
     }
