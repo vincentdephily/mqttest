@@ -1,6 +1,6 @@
 on: [push, pull_request]
 name: Continuous Integration
-{% raw  %}
+
 jobs:
 
   test:
@@ -56,4 +56,4 @@ jobs:
         with:
           command: clippy
           args: -- -D warnings
-{% endraw  %}
+
