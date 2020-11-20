@@ -61,6 +61,17 @@ impl DumpQosId {
     }
 }
 
+/// Parsed MQTT connect packet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DumpConnect {
+    /// MQTT version identifier
+    pub proto: String,
+    /// The client-declared or server-assigned client id
+    pub id: String,
+    /// "clean" or "restore" for MQTT3
+    pub session: String,
+}
+
 /// Parsed MQTT connack packet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpConnack {
@@ -173,7 +184,7 @@ pub enum DumpSubackcode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DumpMqtt {
     /// The string is the client id.
-    Connect(String),
+    Connect(DumpConnect),
     Connack(DumpConnack),
     Publish(DumpPublish),
     Puback(DumpPid),
@@ -209,7 +220,15 @@ impl DumpMqtt {
     }
     fn new(p: &Packet, decode_cmd: &Option<String>) -> Self {
         match p {
-            Packet::Connect(p) => Self::Connect(p.client_id.clone()),
+            Packet::Connect(p) => {
+                Self::Connect(DumpConnect { proto: format!("{:?}", p.protocol),
+                                            id: p.client_id.clone(),
+                                            session: String::from(if p.clean_session {
+                                                                      "clean"
+                                                                  } else {
+                                                                      "restore"
+                                                                  }) })
+            },
             Packet::Connack(p) => Self::Connack(DumpConnack { session: p.session_present,
                                                               code: format!("{:?}", p.code) }),
             Packet::Publish(p) => {
