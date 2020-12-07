@@ -325,7 +325,7 @@ impl Dump {
     }
 
     fn now_str() -> String {
-        let t = time::OffsetDateTime::now();
+        let t = time::OffsetDateTime::now_utc();
         format!("{}.{:06.06}Z", t.format("%FT%T"), t.microsecond())
     }
 
