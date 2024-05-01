@@ -4,10 +4,10 @@
 
 use crate::{test::client::client, *};
 use assert_matches::*;
+use futures::FutureExt;
 use mqttrs::*;
 use std::future::Future;
 use tokio::{runtime::Builder, spawn};
-use futures::FutureExt;
 
 mod client;
 

@@ -5,11 +5,11 @@
 use super::timeout;
 use crate::*;
 use bytes::BytesMut;
+use futures::{SinkExt, StreamExt};
 use mqttrs::*;
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use futures::{StreamExt, SinkExt};
 
 
 #[derive(Debug)]

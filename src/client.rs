@@ -161,6 +161,7 @@ pub(crate) struct Client<'s> {
     count_pkt: usize,
 }
 impl Client<'_> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn(id: ConnId,
                         socket: TcpStream,
                         subs: &Arc<Mutex<Subs>>,
@@ -182,6 +183,7 @@ impl Client<'_> {
             mev_s.send(MainEv::Finish(id)).await
         });
     }
+    #[allow(clippy::too_many_arguments)]
     /// Start a new `Client` on given socket, using a `Future` (to be executed by the caller) to
     /// represent the whole connection.
     async fn start(id: ConnId,
@@ -196,8 +198,8 @@ impl Client<'_> {
         info!("C{}: Connection from {:?}", id, socket);
         event_s.send(Event::conn(id));
         let (read, write) = socket.split();
-        let max_pkt = conf.max_pkt[id as usize % conf.max_pkt.len()].unwrap_or(std::usize::MAX);
-        let sess_expire = conf.sess_expire[id as usize % conf.sess_expire.len()];
+        let max_pkt = conf.max_pkt[id % conf.max_pkt.len()].unwrap_or(usize::MAX);
+        let sess_expire = conf.sess_expire[id % conf.sess_expire.len()];
         let mut client = Client { id,
                                   name: String::from(""),
                                   addr: Addr(cev_s.clone(), id),
@@ -222,7 +224,7 @@ impl Client<'_> {
                                   count_pkt: 0 };
 
         // Setup disconnect timer.
-        if let Some(m) = conf.max_time[id as usize % conf.max_time.len()] {
+        if let Some(m) = conf.max_time[id % conf.max_time.len()] {
             client.send_in(m, ClientEv::Disconnect(format!("max time {:?}", m)));
         }
 
@@ -305,14 +307,14 @@ impl Client<'_> {
                     Protocol::MQIsdp => self.ack_timeouts_conf.0.unwrap_or(FOREVER),
                 };
                 // Set and check client name
-                self.name = c.client_id.clone();
                 if let Err((code, desc)) = self.check_credentials(&c) {
                     self.addr.send(ClientEv::PktOut(connack(false, code))).await;
                     return Err(Error::new(ErrorKind::ConnectionAborted, desc));
                 }
+                self.name = c.client_id;
                 // Load session
                 let mut sm = self.sessions.lock().await;
-                let mut sess = sm.open(&self, c.clean_session).await;
+                let mut sess = sm.open(self, c.clean_session).await;
                 let isold = sess.cons > 0;
                 debug!("C{}: loaded {} session {:?}",
                        self.id,
@@ -321,7 +323,7 @@ impl Client<'_> {
                 sess.cons += 1;
                 let mut subs = self.subs.lock().await;
                 for (topic, qos) in sess.subs.iter() {
-                    subs.add(&topic, *qos, self.id, self.addr.clone());
+                    subs.add(topic, *qos, self.id, self.addr.clone());
                 }
                 self.session = Some(sess);
                 // Handle QoS

@@ -119,7 +119,7 @@ impl DumpPayload {
 /// Run an external command, writing to its stdin and reading from its stdout. Returns an error if
 /// the exit status isn't sucessful, stderr isn't empty, or some other error occurs.
 // FIXME: Timeout execution.
-fn spawn_cmd(raw: &Vec<u8>, cmd: &String) -> Result<Vec<u8>, String> {
+fn spawn_cmd(raw: &[u8], cmd: &String) -> Result<Vec<u8>, String> {
     let mut child = Command::new(cmd).stdin(Stdio::piped())
                                      .stdout(Stdio::piped())
                                      .stderr(Stdio::piped())
@@ -231,8 +231,8 @@ impl DumpMqtt {
             Packet::Publish(p) => {
                 Self::Publish(DumpPublish { dup: p.dup,
                                             qos: DumpQosId::from(p.qospid),
-                                            topic: p.topic_name.to_string(),
-                                            pl: DumpPayload::new(p.payload.to_vec(), &decode_cmd) })
+                                            topic: p.topic_name.clone(),
+                                            pl: DumpPayload::new(p.payload.clone(), decode_cmd) })
             },
             Packet::Puback(p) => Self::Puback(p.get()),
             Packet::Pubrec(p) => Self::Pubrec(p.get()),

@@ -27,7 +27,11 @@ mod test;
 use crate::{client::*, dump::*, messages::*, pubsub::*, session::*};
 use futures::lock::Mutex;
 use log::*;
-use std::{collections::HashMap, io::{Error, ErrorKind}, ops::RangeInclusive, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashMap,
+          io::{Error, ErrorKind},
+          ops::RangeInclusive,
+          sync::Arc,
+          time::{Duration, Instant}};
 use tokio::{net::TcpListener, spawn, sync::mpsc::*, task::JoinHandle};
 
 pub use dump::*;
@@ -106,7 +110,7 @@ impl Conf {
                strict: false,
                idprefix: "".into(),
                userpass: None,
-               max_connect: std::usize::MAX,
+               max_connect: usize::MAX,
                max_runtime: None,
                max_pkt: vec![None],
                max_pkt_delay: None,
@@ -193,7 +197,7 @@ impl Conf {
     }
     /// Only accept up to N connections, and stop the server after established connections close.
     pub fn max_connect(mut self, c: impl Into<Option<usize>>) -> Self {
-        self.max_connect = c.into().unwrap_or(std::usize::MAX);
+        self.max_connect = c.into().unwrap_or(usize::MAX);
         self
     }
     /// Stop the server and any existing connections after a certain time.
@@ -266,6 +270,11 @@ impl Conf {
     pub fn result_buffer(mut self, c: usize) -> Self {
         self.result_buffer = c;
         self
+    }
+}
+impl Default for Conf {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -347,7 +356,7 @@ impl Mqttest {
         spawn(async move {
             let mut con = 0;
             while max_connect > con {
-                let res = listener.accept().await.map(|(s,_)|s);
+                let res = listener.accept().await.map(|(s, _)| s);
                 con += 1;
                 if mev_s2.send(MainEv::Accept(res)).await.is_err() {
                     trace!("Main task finished, stopping accept task");
@@ -402,7 +411,8 @@ impl Mqttest {
                     },
                     MainEv::Cmd(Command::Stop) => {
                         for cev_s in clients.values_mut() {
-                            let _ = cev_s.send(ClientEv::Disconnect(String::from("Cmd::Stop")));
+                            let _ =
+                                cev_s.send(ClientEv::Disconnect(String::from("Cmd::Stop"))).await;
                         }
                         break;
                     },
