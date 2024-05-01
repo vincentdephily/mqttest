@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        toolchain: [1.65.0, stable]
+        toolchain: [1.74.0, stable]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
