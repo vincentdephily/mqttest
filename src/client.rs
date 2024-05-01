@@ -125,7 +125,7 @@ pub(crate) struct Client<'s> {
     /// Write `Packet`s there, they'll get encoded and sent over the TcpStream.
     writer: FramedWrite<WriteHalf<'s>, Codec>,
     /// Dump targets.
-    dumps: Dump,
+    dumper: Dumper,
     /// Send events to lib user
     event_s: SendEvent,
     /// Protocol-specific ack-timeout config.
@@ -166,7 +166,7 @@ impl Client<'_> {
                         socket: TcpStream,
                         subs: &Arc<Mutex<Subs>>,
                         sess: &Arc<Mutex<Sessions>>,
-                        dumps: &Dump,
+                        dumper: &Dumper,
                         conf: &Conf,
                         event_s: &SendEvent,
                         cev_s: Sender<ClientEv>,
@@ -175,11 +175,11 @@ impl Client<'_> {
         let mev_s = mev_s.clone();
         let subs = subs.clone();
         let sess = sess.clone();
-        let dumps = dumps.clone();
+        let dumper = dumper.clone();
         let event_s = event_s.clone();
         let conf = conf.clone(); // TODO: use an Arc<Conf>
         spawn(async move {
-            Client::start(id, socket, subs, sess, dumps, conf, event_s, cev_s, cev_r).await;
+            Client::start(id, socket, subs, sess, dumper, conf, event_s, cev_s, cev_r).await;
             mev_s.send(MainEv::Finish(id)).await
         });
     }
@@ -190,7 +190,7 @@ impl Client<'_> {
                    mut socket: TcpStream,
                    subs: Arc<Mutex<Subs>>,
                    sessions: Arc<Mutex<Sessions>>,
-                   dumps: Dump,
+                   dumper: Dumper,
                    conf: Conf,
                    mut event_s: SendEvent,
                    cev_s: Sender<ClientEv>,
@@ -205,7 +205,7 @@ impl Client<'_> {
                                   addr: Addr(cev_s.clone(), id),
                                   conn: false,
                                   writer: FramedWrite::new(write, Codec(id)),
-                                  dumps,
+                                  dumper,
                                   event_s,
                                   ack_timeouts_conf: conf.ack_timeouts,
                                   ack_timeout: conf.ack_timeouts.0.unwrap_or(FOREVER),
@@ -231,7 +231,7 @@ impl Client<'_> {
         // Initialize json dump target.
         for s in conf.dump_files {
             let s = s.replace("{c}", &format!("{}", id));
-            match client.dumps.register(&s) {
+            match client.dumper.register(&s) {
                 Ok(_) => debug!("C{}: Dump to {}", id, s),
                 Err(e) => error!("C{}: Cannot dump to {}: {}", id, s, e),
             }
@@ -296,7 +296,7 @@ impl Client<'_> {
     async fn handle_pkt_in(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: receive Packet::{:?}", self.id, pkt);
         self.event_s.send(Event::recv(self.id, pkt.clone()));
-        self.dumps.dump(self.id, "C", &pkt).await;
+        self.dumper.dump(self.id, "C", &pkt).await;
         self.count_pkt += 1;
         match (pkt, self.conn) {
             // Connection
@@ -395,7 +395,7 @@ impl Client<'_> {
     async fn handle_pkt_out(&mut self, pkt: Packet) -> Result<(), Error> {
         info!("C{}: send Packet::{:?}", self.id, pkt);
         self.event_s.send(Event::send(self.id, pkt.clone()));
-        self.dumps.dump(self.id, "S", &pkt).await;
+        self.dumper.dump(self.id, "S", &pkt).await;
         self.writer.send(pkt).await?;
         self.writer.flush().await.map_err(|e| e.into())
     }

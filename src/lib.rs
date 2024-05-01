@@ -346,7 +346,7 @@ impl Mqttest {
         let max_connect = conf.max_connect;
         let subs = Arc::new(Mutex::new(Subs::new()));
         let sess = Arc::new(Mutex::new(Sessions::new()));
-        let dumps = Dump::new(&conf.dump_decode, &conf.dump_prefix);
+        let dumper = Dumper::new(&conf.dump_decode, &conf.dump_prefix);
         let mut id = 0;
         let mut clients = HashMap::new();
         let start_time = Instant::now();
@@ -396,7 +396,7 @@ impl Mqttest {
                     MainEv::Accept(Ok(socket)) => {
                         let (cev_s, cev_r) = channel::<ClientEv>(10);
                         clients.insert(id, cev_s.clone());
-                        Client::spawn(id, socket, &subs, &sess, &dumps, &conf, &event_s, cev_s,
+                        Client::spawn(id, socket, &subs, &sess, &dumper, &conf, &event_s, cev_s,
                                       cev_r, &mev_s);
                         id += 1;
                     },

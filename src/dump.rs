@@ -1,7 +1,7 @@
 use crate::{mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes},
             ConnId};
 use log::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{from_slice, to_string, Value};
 use std::{collections::HashMap,
           fs::OpenOptions,
@@ -11,7 +11,7 @@ use std::{collections::HashMap,
 use time::OffsetDateTime;
 use tokio::sync::mpsc::{channel, Sender};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpMeta<'a> {
     /// Packet timestamp
     pub ts: OffsetDateTime,
@@ -26,7 +26,7 @@ pub struct DumpMeta<'a> {
 pub type DumpPid = u16;
 
 /// Parsed QoS.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum DumpQos {
     AtMostOnce,
     AtLeastOnce,
@@ -43,7 +43,7 @@ impl From<QoS> for DumpQos {
 }
 
 /// Parsed QoS+PacketIdentifier.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum DumpQosId {
     AtMostOnce,
     AtLeastOnce(DumpPid),
@@ -60,7 +60,7 @@ impl DumpQosId {
 }
 
 /// Parsed MQTT connect packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpConnect {
     /// MQTT version identifier
     pub proto: String,
@@ -71,14 +71,14 @@ pub struct DumpConnect {
 }
 
 /// Parsed MQTT connack packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpConnack {
     pub session: bool,
     pub code: String, //FIXME proper type
 }
 
 /// Parsed MQTT publish packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpPublish {
     pub dup: bool,
     pub qos: DumpQosId,
@@ -86,7 +86,7 @@ pub struct DumpPublish {
     pub pl: DumpPayload,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpPayload {
     /// Length (in bytes) of the publish payload.
     pub len: usize,
@@ -140,33 +140,33 @@ fn spawn_cmd(raw: &[u8], cmd: &String) -> Result<Vec<u8>, String> {
 }
 
 /// Parsed MQTT subscribe packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpSubscribe {
     pub pid: DumpPid,
     pub topics: Vec<DumpSubscribeTopic>,
 }
 
 /// Parsed MQTT unsubscribe packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpUnsubscribe {
     pub pid: DumpPid,
     pub topics: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpSubscribeTopic {
     pub topic: String,
     pub qos: DumpQos,
 }
 
 /// Parsed MQTT suback packet.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DumpSuback {
     pub pid: DumpPid,
     pub codes: Vec<DumpSubackcode>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum DumpSubackcode {
     AtMostOnce,
     AtLeastOnce,
@@ -179,7 +179,7 @@ pub enum DumpSubackcode {
 ///
 /// We use our own struct and substructs instead of the `mqttrs` ones, so that we can implement json
 /// serialisation, and add/remove some fields for readbility/unit-testing.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum DumpMqtt {
     /// The string is the client id.
     Connect(DumpConnect),
@@ -283,15 +283,15 @@ impl DumpMqtt {
 /// for every client.
 // TODO: support de-registering files.
 #[derive(Clone)]
-pub(crate) struct Dump {
+pub(crate) struct Dumper {
     reg: Arc<Mutex<HashMap<String, Sender<String>>>>,
     chans: Vec<Sender<String>>,
     decode_cmd: Option<String>,
     prefix: String,
 }
-impl Dump {
+impl Dumper {
     pub fn new(decode_cmd: &Option<String>, prefix: &str) -> Self {
-        Dump { reg: Arc::new(Mutex::new(HashMap::new())),
+        Self { reg: Arc::new(Mutex::new(HashMap::new())),
                chans: vec![],
                decode_cmd: decode_cmd.clone(),
                prefix: prefix.to_owned() }
@@ -299,7 +299,7 @@ impl Dump {
 
     /// Register a new file to send dumps to. This spawns an async writer for each file, and makes
     /// sure that a given file is opened only once. Use `dump()` to send data to all the writers
-    /// that have been registered with this `Dump`.
+    /// that have been registered with this `Dumper`.
     pub fn register(&mut self, name: &str) -> Result<(), Error> {
         let name = format!("{}{}", self.prefix, name);
         let mut reg = self.reg.lock().expect("Aquire Dump.reg");
