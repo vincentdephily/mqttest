@@ -16,7 +16,7 @@ Initial development has been sponsored by [Munic](https://munic.io/).
   - [x] Use as a rust library
     - [x] Decode file dumps to rust structs
     - [x] Configure and start server
-    - [ ] Runtime server control and client interaction using rust channels
+    - [x] Runtime server control and client interaction using rust channels
     - [ ] Return dumps and stats after each run
   - [ ] Use as a library from other languages
 - Verbose log file and network dump
@@ -110,7 +110,7 @@ fn connect() {
         srv.finish().await.unwrap()
     });
     // Check run results
-    assert_eq!(1, stats.conn_count
+    assert_eq!(1, stats.conn_count);
 }
 ```
 

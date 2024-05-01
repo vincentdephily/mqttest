@@ -8,9 +8,12 @@
   - Client connect/disconnect
   - Packets sent/received
   - Server termination
-* Events can be filtered via `Conf::event_*()` builders
+  - Types received can be filtered via `Conf::event_*()` builders
+  - The server will buffer a finite but configurable number of events
+  - Events can be received async during the server run, or sync at server finish
 * Waiting for the server to finish is now done via `Mqttest::finish()` method
-  - This returns some basic runtime statistics
+  - This returns some basic runtime statistics, and any leftover events
+* Added a max_runtime config to stop the server after a delay
 
 # 0.2.0 (2020-04-06)
 
