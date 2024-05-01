@@ -7,6 +7,7 @@ use assert_matches::*;
 use mqttrs::*;
 use std::future::Future;
 use tokio::{runtime::Builder, spawn};
+use futures::FutureExt;
 
 mod client;
 
@@ -21,7 +22,7 @@ fn block_on<T>(f: impl Future<Output = T>) -> T {
                                  .is_test(true)
                                  .parse_filters("debug")
                                  .try_init();
-    Builder::new().basic_scheduler().enable_all().build().unwrap().block_on(f)
+    Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
 }
 
 #[test]

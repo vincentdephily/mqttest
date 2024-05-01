@@ -9,6 +9,7 @@ use mqttrs::*;
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
+use futures::{StreamExt, SinkExt};
 
 
 #[derive(Debug)]

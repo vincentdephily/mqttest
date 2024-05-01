@@ -1,6 +1,5 @@
 use crate::{mqtt::{Packet, QoS, QosPid, SubscribeReturnCodes},
             ConnId};
-use futures::prelude::*;
 use log::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, to_string, Value};
@@ -220,7 +219,7 @@ impl DumpMqtt {
         match p {
             Packet::Connect(p) => {
                 Self::Connect(DumpConnect { proto: format!("{:?}", p.protocol),
-                                            id: p.client_id.clone(),
+                                            id: p.client_id.to_string(),
                                             session: String::from(if p.clean_session {
                                                                       "clean"
                                                                   } else {
@@ -232,8 +231,8 @@ impl DumpMqtt {
             Packet::Publish(p) => {
                 Self::Publish(DumpPublish { dup: p.dup,
                                             qos: DumpQosId::from(p.qospid),
-                                            topic: p.topic_name.clone(),
-                                            pl: DumpPayload::new(p.payload.clone(), &decode_cmd) })
+                                            topic: p.topic_name.to_string(),
+                                            pl: DumpPayload::new(p.payload.to_vec(), &decode_cmd) })
             },
             Packet::Puback(p) => Self::Puback(p.get()),
             Packet::Pubrec(p) => Self::Pubrec(p.get()),
@@ -310,7 +309,7 @@ impl Dump {
                 let (sx, mut rx) = channel::<String>(10);
                 reg.insert(name.clone(), sx.clone());
                 tokio::spawn(async move {
-                    while let Some(s) = rx.next().await {
+                    while let Some(s) = rx.recv().await {
                         if let Err(e) = f.write_all(s.as_bytes()) {
                             error!("Writing to {}: {:?}", name, e);
                         }

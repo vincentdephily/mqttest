@@ -25,13 +25,9 @@ mod session;
 mod test;
 
 use crate::{client::*, dump::*, messages::*, pubsub::*, session::*};
-use futures::{lock::Mutex, prelude::*};
+use futures::lock::Mutex;
 use log::*;
-use std::{collections::HashMap,
-          io::{Error, ErrorKind},
-          ops::RangeInclusive,
-          sync::Arc,
-          time::{Duration, Instant}};
+use std::{collections::HashMap, io::{Error, ErrorKind}, ops::RangeInclusive, sync::Arc, time::{Duration, Instant}};
 use tokio::{net::TcpListener, spawn, sync::mpsc::*, task::JoinHandle};
 
 pub use dump::*;
@@ -347,24 +343,24 @@ impl Mqttest {
         let start_time = Instant::now();
 
         // Task to accept new connections and forward them to the main event loop
-        let mut mev_s2 = mev_s.clone();
+        let mev_s2 = mev_s.clone();
         spawn(async move {
-            let mut inc = listener.take(max_connect);
-            if max_connect > 0 {
-                while let Some(s) = inc.next().await {
-                    if mev_s2.send(MainEv::Accept(s)).await.is_err() {
-                        trace!("Main task finished, stopping accept task");
-                        break;
-                    }
+            let mut con = 0;
+            while max_connect > con {
+                let res = listener.accept().await.map(|(s,_)|s);
+                con += 1;
+                if mev_s2.send(MainEv::Accept(res)).await.is_err() {
+                    trace!("Main task finished, stopping accept task");
+                    break;
                 }
             }
             info!("Accepted {} connections, waiting for them to finish", max_connect);
         });
 
         // Task to receive external commands and forward them to the main event loop
-        let mut mev_s3 = mev_s.clone();
+        let mev_s3 = mev_s.clone();
         spawn(async move {
-            while let Some(c) = cmd_r.next().await {
+            while let Some(c) = cmd_r.recv().await {
                 if mev_s3.send(MainEv::Cmd(c)).await.is_err() {
                     trace!("Main task finished, stopping cmd task");
                     break;
@@ -375,9 +371,9 @@ impl Mqttest {
 
         // Task to kill the server
         if let Some(d) = conf.max_runtime {
-            let mut mev_s4 = mev_s.clone();
+            let mev_s4 = mev_s.clone();
             spawn(async move {
-                tokio::time::delay_for(d).await;
+                tokio::time::sleep(d).await;
                 let _ = mev_s4.send(MainEv::Cmd(Command::Stop)).await;
             });
         }
@@ -385,7 +381,7 @@ impl Mqttest {
 
         // Main event loop task
         let done = spawn(async move {
-            while let Some(ev) = mev_r.next().await {
+            while let Some(ev) = mev_r.recv().await {
                 info!("{:?}", ev);
                 match ev {
                     MainEv::Accept(Ok(socket)) => {

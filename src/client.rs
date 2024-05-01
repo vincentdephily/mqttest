@@ -13,7 +13,7 @@ use tokio::{net::{tcp::{ReadHalf, WriteHalf},
             spawn,
             sync::{mpsc::{Receiver, Sender},
                    oneshot},
-            time::delay_until};
+            time::sleep_until};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 
@@ -63,7 +63,7 @@ impl Addr {
         let addr = self.clone();
         ControledTask::spawn(async move {
             trace!("send_at {:?} {:?} {:?}", deadline, addr, msg);
-            delay_until(deadline.into()).await;
+            sleep_until(deadline.into()).await;
             addr.send(msg).await;
         })
     }
@@ -171,7 +171,7 @@ impl Client<'_> {
                         cev_s: Sender<ClientEv>,
                         cev_r: Receiver<ClientEv>,
                         mev_s: &Sender<MainEv>) {
-        let mut mev_s = mev_s.clone();
+        let mev_s = mev_s.clone();
         let subs = subs.clone();
         let sess = sess.clone();
         let dumps = dumps.clone();
@@ -259,7 +259,7 @@ impl Client<'_> {
 
     /// Frame bytes from the socket as Decode MQTT packets, and forwards them as `ClientEv`s.
     async fn handle_net(read: ReadHalf<'_>,
-                        mut sx: Sender<ClientEv>,
+                        sx: Sender<ClientEv>,
                         id: ConnId)
                         -> Result<&'static str, Error> {
         let mut frame = FramedRead::new(read, Codec(id));
@@ -277,7 +277,7 @@ impl Client<'_> {
     async fn handle_msg(client: &mut Client<'_>,
                         mut receiver: Receiver<ClientEv>)
                         -> Result<&'static str, Error> {
-        while let Some(msg) = receiver.next().await {
+        while let Some(msg) = receiver.recv().await {
             match msg {
                 ClientEv::PktIn(p) => client.handle_pkt_in(p).await?,
                 ClientEv::PktOut(p) => client.handle_pkt_out(p).await?,
