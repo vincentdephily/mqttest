@@ -8,12 +8,13 @@ use std::{collections::HashMap,
           io::{Error, Write},
           process::{Command, Stdio},
           sync::{Arc, Mutex}};
+use time::OffsetDateTime;
 use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DumpMeta<'a> {
-    /// Timestamp formated as a string, fixed-size, iso-8601, UTC
-    pub ts: String,
+    /// Packet timestamp
+    pub ts: OffsetDateTime,
     /// Connection id/counter
     pub con: ConnId,
     /// Packet origin: from (C)lient or from (S)erver.
@@ -323,17 +324,12 @@ impl Dump {
         Ok(())
     }
 
-    fn now_str() -> String {
-        let t = time::OffsetDateTime::now_utc();
-        format!("{}.{:06.06}Z", t.format("%FT%T"), t.microsecond())
-    }
-
     /// Serialize packet/metadata as json and asynchronously write it to the files.
     pub async fn dump<'s>(&'s self, con: ConnId, from: &str, pkt: &Packet) {
         // Build DumpMqtt struct
-        let ts = Dump::now_str();
+        let ts = OffsetDateTime::now_utc();
         let pkt = DumpMqtt::new(pkt, &self.decode_cmd);
-        let e = to_string(&DumpMeta { ts, con, from, pkt }).unwrap();
+        let e = to_string(&DumpMeta { ts, con, from, pkt }).expect("Failed to serialize DumpMeta");
 
         // Send it to all writers
         for c in self.chans.iter() {
