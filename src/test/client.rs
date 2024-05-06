@@ -8,7 +8,7 @@ use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use mqttrs::*;
 use std::net::{IpAddr, SocketAddr};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, time::sleep};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
 
@@ -50,17 +50,33 @@ impl Encoder<Packet> for MqttCodec {
     }
 }
 
-/// Connect to server, publish "hello", subscribe to "mqttest", handle incoming packets, and stop
-/// after `wait` ms of inactivity.
-pub async fn client(id: impl std::fmt::Display, port: u16, wait: u64) -> Result<(), ClientError> {
+/// Something the client should do between connection and disconnection
+pub enum Step {
+    /// Do nothing for N milliseconds
+    Sleep(u64),
+    /// Publish "hello" on topic "mqttest" with Qos 0
+    Pub,
+    /// Subscribe to topic "mqttest" with Qos 0
+    Sub,
+    /// Handle pings and publishes for N milliseconds
+    Recv(u64),
+}
+
+/// Connect to server, go through specified [Step]s, and disconnect
+///
+/// [Step]: enum.Step.html
+pub async fn client(id: impl std::fmt::Display,
+                    port: u16,
+                    steps: &[Step])
+                    -> Result<(), ClientError> {
     // Connect to TCP
-    debug!("TCP connect");
+    debug!("{id} Connect");
     let sock = SocketAddr::from((IpAddr::from([127, 0, 0, 1]), port));
     let stream = TcpStream::connect(sock).await?;
     let mut frame = Framed::new(stream, MqttCodec {});
 
     // Send MQTT CONNECT
-    debug!("MQTT handshake");
+    debug!("{id} Handshake");
     let pkt = Connect { protocol: Protocol::MQTT311,
                         keep_alive: 60,
                         client_id: format!("{}", id),
@@ -76,41 +92,50 @@ pub async fn client(id: impl std::fmt::Display, port: u16, wait: u64) -> Result<
         o => Err(format!("Expected Connack got {:?}", o))?,
     }
 
-    // Publish something
-    debug!("MQTT publish");
-    let pkt = Publish { dup: false,
-                        qospid: QosPid::AtMostOnce,
-                        retain: false,
-                        topic_name: String::from("mqttest"),
-                        payload: "hello".into() };
-    frame.send(pkt.into()).await?;
-
-    if wait > 0 {
-        // Subscribe
-        debug!("MQTT subscribe");
-        let pid = Pid::new();
-        let topics =
-            vec![SubscribeTopic { topic_path: String::from("mqttest"), qos: QoS::AtMostOnce }];
-        let pkt = Subscribe { pid, topics };
-        frame.send(pkt.into()).await?;
-        match frame.next().await {
-            Some(Ok(Packet::Suback(p))) if p.pid == pid => (),
-            o => Err(format!("Expected Suback got {:?}", o))?,
-        }
-
-        // Wait for publish/ping, with a timeout
-        while let Some(p) = timeout(wait, frame.next()).await {
-            debug!("Treating {:?}", p);
-            match p {
-                Some(Ok(Packet::Pingreq)) => frame.send(Packet::Pingresp).await?,
-                Some(Ok(Packet::Publish(_))) => (),
-                None => break,
-                o => Err(format!("Unexpected {:?}", o))?,
-            }
+    for step in steps {
+        match step {
+            Step::Sleep(ms) => {
+                sleep(Duration::from_millis(*ms)).await;
+            },
+            Step::Pub => {
+                // Publish something
+                debug!("{id} Publish");
+                let pkt = Publish { dup: false,
+                                    qospid: QosPid::AtMostOnce,
+                                    retain: false,
+                                    topic_name: String::from("mqttest"),
+                                    payload: "hello".into() };
+                frame.send(pkt.into()).await?;
+            },
+            Step::Sub => {
+                // Subscribe
+                debug!("{id} Subscribe");
+                let pid = Pid::new();
+                let topics = vec![SubscribeTopic { topic_path: String::from("mqttest"),
+                                                   qos: QoS::AtMostOnce }];
+                let pkt = Subscribe { pid, topics };
+                frame.send(pkt.into()).await?;
+                match frame.next().await {
+                    Some(Ok(Packet::Suback(p))) if p.pid == pid => (),
+                    o => Err(format!("Expected Suback got {:?}", o))?,
+                }
+            },
+            Step::Recv(wait) => {
+                // Wait for publish/ping, with a timeout
+                while let Some(p) = timeout(*wait, frame.next()).await {
+                    debug!("{id} Received {:?}", p);
+                    match p {
+                        Some(Ok(Packet::Pingreq)) => frame.send(Packet::Pingresp).await?,
+                        Some(Ok(Packet::Publish(_))) => (),
+                        None => break,
+                        o => Err(format!("Unexpected {:?}", o))?,
+                    }
+                }
+            },
         }
     }
 
     // Disconnect (drop the TcpStream)
-    debug!("Done");
+    debug!("{id} Done");
     Ok(())
 }

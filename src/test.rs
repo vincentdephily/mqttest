@@ -2,7 +2,8 @@
 //! much for documenting usage as for actual unittesting.
 // TODO: convert to example
 
-use crate::{test::client::client, *};
+use crate::{test::client::{client, Step},
+            *};
 use assert_matches::*;
 use futures::FutureExt;
 use mqttrs::*;
@@ -25,6 +26,13 @@ fn block_on<T>(f: impl Future<Output = T>) -> T {
     Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
 }
 
+/// Expect server Event
+macro_rules! expect_event {
+    ($s: ident, $e: pat) => {
+        assert_matches!($s.events.recv().await, Some($e));
+    };
+}
+
 #[test]
 fn connect() {
     let stats = block_on(async {
@@ -33,7 +41,7 @@ fn connect() {
         // Start the server
         let srv = Mqttest::start(conf).await.expect("Failed listen");
         // Start your client on the port that the server selected
-        client("mqttest", srv.port, 0).await.expect("client failure");
+        client("mqttest", srv.port, &[]).await.expect("client failure");
         // Wait for the server to finish
         srv.finish().await
     });
@@ -50,7 +58,7 @@ fn stop_on_drop() {
         drop(srv);
 
         // Connecting client should fail
-        client("mqttest", port, 0).await.expect_err("client failure");
+        client("mqttest", port, &[]).await.expect_err("client failure");
     });
 }
 
@@ -62,7 +70,7 @@ fn cmd_disconnect() {
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start long-running client as a separate task, look for start event
-        let cli = spawn(client("mqttest", srv.port, 1000));
+        let cli = spawn(client("mqttest", srv.port, &[Step::Recv(1000)]));
 
         // Kill the client early, check for quick death
         assert_eq!(None, timeout(50, srv.events.recv()).await);
@@ -96,12 +104,9 @@ fn cmd_send_ping() {
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start client and wait for handshake
-        let cli = spawn(client("mqttest", srv.port, 200));
+        let cli = spawn(client("mqttest", srv.port, &[Step::Recv(200)]));
         assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Connect(_))));
         assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_))));
-        assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Publish(_))));
-        assert_matches!(srv.events.recv().await, Some(Event::Recv(_, 0, Packet::Subscribe(_))));
-        assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_))));
 
         // Send ping and wait for pong
         srv.commands.send(Command::SendPacket(0, Packet::Pingreq)).expect("command failed");
@@ -118,6 +123,37 @@ fn cmd_send_ping() {
 }
 
 #[test]
+fn pubsub() {
+    block_on(async {
+        // Start the server
+        let conf = Conf::new().max_connect(2).event_on(EventKind::Recv).event_on(EventKind::Send);
+        let mut srv = Mqttest::start(conf).await.expect("Failed listen");
+
+        // Start subscriber client
+        let cli1 = spawn(client("sub", srv.port, &[Step::Sub, Step::Recv(200)]));
+        expect_event!(srv, Event::Recv(_, 0, Packet::Connect(_)));
+        expect_event!(srv, Event::Send(_, 0, Packet::Connack(_)));
+        expect_event!(srv, Event::Recv(_, 0, Packet::Subscribe(_)));
+        expect_event!(srv, Event::Send(_, 0, Packet::Suback(_)));
+
+        // Start publisher client
+        // FIXME: Shouldn't need to sleep, server should finish handling messages after connection closes
+        let cli2 = spawn(client("pub", srv.port, &[Step::Pub, Step::Sleep(20)]));
+        expect_event!(srv, Event::Recv(_, 1, Packet::Connect(_)));
+        expect_event!(srv, Event::Send(_, 1, Packet::Connack(_)));
+
+        // Receive publish
+        expect_event!(srv, Event::Recv(_, 1, Packet::Publish(_)));
+        expect_event!(srv, Event::Send(_, 0, Packet::Publish(_)));
+
+        // Wait for the server to finish
+        cli1.await.expect("join failure").expect("client failure");
+        cli2.await.expect("join failure").expect("client failure");
+        assert!(srv.finish().await.events.is_empty());
+    });
+}
+
+#[test]
 fn events_full() {
     block_on(async {
         // Start a server with a small result buffer
@@ -125,7 +161,7 @@ fn events_full() {
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Fill the event channel
-        let cli = spawn(client("mqttest", srv.port, 150));
+        let cli = spawn(client("mqttest", srv.port, &[Step::Sub, Step::Recv(150)]));
         assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_))));
         assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_))));
         for _ in 0..15 {
