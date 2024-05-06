@@ -2,7 +2,7 @@
 name = "mqttest"
 version = "0.2.0"
 authors = ["Vincent de Phily <moltonel@gmail.com>"]
-edition = "2018"
+edition = "2021"
 rust-version = "1.74.0"
 description = "An MQTT server designed for unittesting MQTT clients."
 keywords = ["mqtt", "server", "test", "unittest"]
