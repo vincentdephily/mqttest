@@ -194,7 +194,7 @@ impl Client<'_> {
                    conf: Conf,
                    mut event_s: SendEvent,
                    cev_s: Sender<ClientEv>,
-                   cev_r: Receiver<ClientEv>) {
+                   mut cev_r: Receiver<ClientEv>) {
         info!("C{}: Connection from {:?}", id, socket);
         event_s.send(Event::conn(id));
         let (read, write) = socket.split();
@@ -239,11 +239,17 @@ impl Client<'_> {
 
         // Handle the Tcp and ClientEv streams concurrently.
         let f1 = Self::handle_net(read, cev_s, client.id);
-        let f2 = Self::handle_msg(&mut client, cev_r);
-        let res = futures::select!(r = f1.fuse() => r, r = f2.fuse() => r);
+        let f2 = Self::handle_msg(&mut client, &mut cev_r);
+        let res = match futures::select!(r = f1.fuse() => r, r = f2.fuse() => r) {
+            Ok("net") => Self::handle_msg(&mut client, &mut cev_r).await,
+            r => r,
+        };
 
         // One of the stream ended, cleanup.
-        warn!("C{}: Terminating: {:?}", id, res);
+        match res {
+            Err(e) => warn!("C{id}: Terminating due to {e}"),
+            Ok(_) => info!("C{id}: Terminating"),
+        }
         let mut subs = client.subs.lock().await;
         subs.del_all(&client);
         if let Some(sess) = client.session.take() {
@@ -266,18 +272,19 @@ impl Client<'_> {
                         -> Result<&'static str, Error> {
         let mut frame = FramedRead::new(read, Codec(id));
         while let Some(pkt) = frame.next().await {
-            sx.send(ClientEv::PktIn(pkt?)).await.map_err(|e| {
-                                                     Error::new(ErrorKind::Other,
-                                                               format!("while sending to self: {}",
-                                                                       e))
-                                                 })?;
+            sx.send(ClientEv::PktIn(pkt?))
+              .await
+              .map_err(|e| Error::new(ErrorKind::Other, format!("Sending ClientEv: {e}")))?;
         }
-        Ok("Connection closed")
+        sx.send(ClientEv::Disconnect(String::from("tcp close")))
+          .await
+          .map_err(|e| Error::new(ErrorKind::Other, format!("Sending ClientEv: {e}")))?;
+        Ok("net")
     }
 
     /// Handle `ClientEv`s. This is `Client`'s main event loop.
     async fn handle_msg(client: &mut Client<'_>,
-                        mut receiver: Receiver<ClientEv>)
+                        receiver: &mut Receiver<ClientEv>)
                         -> Result<&'static str, Error> {
         while let Some(msg) = receiver.recv().await {
             match msg {
@@ -289,7 +296,7 @@ impl Client<'_> {
                 ClientEv::Disconnect(r) => client.handle_disconnect(r)?,
             }
         }
-        Ok("No more messages")
+        Ok("msg")
     }
 
     /// Receive packets from client.
@@ -459,7 +466,7 @@ impl Client<'_> {
     }
 
     fn handle_disconnect(&mut self, reason: String) -> Result<(), Error> {
-        info!("C{}: Disconnect by server: {:?}", self.id, reason);
+        info!("C{}: Disconnected: {:?}", self.id, reason);
         self.conn = false;
         Err(Error::new(ErrorKind::ConnectionReset, reason))
     }

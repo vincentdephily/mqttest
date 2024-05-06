@@ -137,8 +137,7 @@ fn pubsub() {
         expect_event!(srv, Event::Send(_, 0, Packet::Suback(_)));
 
         // Start publisher client
-        // FIXME: Shouldn't need to sleep, server should finish handling messages after connection closes
-        let cli2 = spawn(client("pub", srv.port, &[Step::Pub, Step::Sleep(20)]));
+        let cli2 = spawn(client("pub", srv.port, &[Step::Pub]));
         expect_event!(srv, Event::Recv(_, 1, Packet::Connect(_)));
         expect_event!(srv, Event::Send(_, 1, Packet::Connack(_)));
 

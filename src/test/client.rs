@@ -52,6 +52,7 @@ impl Encoder<Packet> for MqttCodec {
 
 /// Something the client should do between connection and disconnection
 pub enum Step {
+    #[allow(dead_code)]
     /// Do nothing for N milliseconds
     Sleep(u64),
     /// Publish "hello" on topic "mqttest" with Qos 0
