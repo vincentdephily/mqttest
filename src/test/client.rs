@@ -8,7 +8,7 @@ use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use mqttrs::*;
 use std::net::{IpAddr, SocketAddr};
-use tokio::{net::TcpStream, time::sleep};
+use tokio::{net::TcpStream, spawn, time::sleep};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
 
@@ -31,6 +31,15 @@ impl From<mqttrs::Error> for ClientError {
 impl From<String> for ClientError {
     fn from(e: String) -> Self {
         Self::Local(e)
+    }
+}
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::Io(e) => write!(f, "{e}"),
+            Self::Codec(e) => write!(f, "{e}"),
+            Self::Local(e) => write!(f, "{e}"),
+        }
     }
 }
 
@@ -63,13 +72,23 @@ pub enum Step {
     Recv(u64),
 }
 
+/// Spawn client and display error
+pub fn spawned(id: &'static str,
+               port: u16,
+               steps: Vec<Step>)
+               -> JoinHandle<Result<(), ClientError>> {
+    spawn(async move {
+        client(id, port, steps).await.map_err(|e| {
+                                         error!("id: {e}");
+                                         e
+                                     })
+    })
+}
+
 /// Connect to server, go through specified [Step]s, and disconnect
 ///
 /// [Step]: enum.Step.html
-pub async fn client(id: impl std::fmt::Display,
-                    port: u16,
-                    steps: &[Step])
-                    -> Result<(), ClientError> {
+pub async fn client(id: &'static str, port: u16, steps: Vec<Step>) -> Result<(), ClientError> {
     // Connect to TCP
     debug!("{id} Connect");
     let sock = SocketAddr::from((IpAddr::from([127, 0, 0, 1]), port));
@@ -93,7 +112,7 @@ pub async fn client(id: impl std::fmt::Display,
         o => Err(format!("Expected Connack got {:?}", o))?,
     }
 
-    for step in steps {
+    for step in steps.iter() {
         match step {
             Step::Sleep(ms) => {
                 sleep(Duration::from_millis(*ms)).await;
