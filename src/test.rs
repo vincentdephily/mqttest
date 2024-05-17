@@ -122,34 +122,62 @@ fn cmd_send_ping() {
     });
 }
 
-#[test]
-fn pubsub() {
-    block_on(async {
+fn pubsub(pubqos: QoS, subqos: QoS) {
+    block_on(async move {
         // Start the server
         let conf = Conf::new().max_connect(2).event_on(EventKind::Recv).event_on(EventKind::Send);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start subscriber client
-        let cli0 = spawned("sub", srv.port, vec![Step::Sub, Step::Recv(200)]);
+        let cli0 = spawned("sub", srv.port, vec![Step::Sub(subqos), Step::Recv(50)]);
         expect_event!(srv, Event::Recv(_, 0, Packet::Connect(_)));
         expect_event!(srv, Event::Send(_, 0, Packet::Connack(_)));
         expect_event!(srv, Event::Recv(_, 0, Packet::Subscribe(_)));
         expect_event!(srv, Event::Send(_, 0, Packet::Suback(_)));
 
         // Start publisher client
-        let cli1 = spawned("pub", srv.port, vec![Step::Pub]);
+        let cli1 = spawned("pub", srv.port, vec![Step::Pub(pubqos), Step::Recv(50)]);
         expect_event!(srv, Event::Recv(_, 1, Packet::Connect(_)));
         expect_event!(srv, Event::Send(_, 1, Packet::Connack(_)));
 
-        // Receive publish
+        // Receive/send publish and (maybe) puback(s)
         expect_event!(srv, Event::Recv(_, 1, Packet::Publish(_)));
         expect_event!(srv, Event::Send(_, 0, Packet::Publish(_)));
+        match pubqos {
+            QoS::AtMostOnce => (),
+            QoS::AtLeastOnce => {
+                expect_event!(srv, Event::Send(_, 1, Packet::Puback(_)));
+            },
+            QoS::ExactlyOnce => todo!(),
+        }
+        match subqos {
+            QoS::AtMostOnce => (),
+            QoS::AtLeastOnce => {
+                expect_event!(srv, Event::Recv(_, 0, Packet::Puback(_)));
+            },
+            QoS::ExactlyOnce => todo!(),
+        }
 
         // Wait for the server to finish
         assert!(srv.finish().await.events.is_empty());
         cli0.await.expect("cli0 join").expect("cli0 result");
         cli1.await.expect("cli1 join").expect("cli1 result");
     });
+}
+
+#[test]
+fn pub0sub0() {
+    pubsub(QoS::AtMostOnce, QoS::AtMostOnce)
+}
+
+#[test]
+fn pub1sub0() {
+    pubsub(QoS::AtLeastOnce, QoS::AtMostOnce)
+}
+
+#[test]
+fn pub0sub1() {
+    pubsub(QoS::AtMostOnce, QoS::AtLeastOnce)
 }
 
 #[test]
@@ -160,7 +188,7 @@ fn events_full() {
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Fill the event channel
-        let cli = spawned("mqttest", srv.port, vec![Step::Sub, Step::Recv(150)]);
+        let cli = spawned("mqttest", srv.port, vec![Step::Sub(QoS::AtMostOnce), Step::Recv(150)]);
         assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Connack(_))));
         assert_matches!(srv.events.recv().await, Some(Event::Send(_, 0, Packet::Suback(_))));
         for _ in 0..15 {

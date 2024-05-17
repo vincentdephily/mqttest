@@ -60,14 +60,15 @@ impl Encoder<Packet> for MqttCodec {
 }
 
 /// Something the client should do between connection and disconnection
+#[derive(Clone, Copy)]
 pub enum Step {
     #[allow(dead_code)]
     /// Do nothing for N milliseconds
     Sleep(u64),
-    /// Publish "hello" on topic "mqttest" with Qos 0
-    Pub,
-    /// Subscribe to topic "mqttest" with Qos 0
-    Sub,
+    /// Publish "hello" on topic "mqttest"
+    Pub(QoS),
+    /// Subscribe to topic "mqttest"
+    Sub(QoS),
     /// Handle pings and publishes for N milliseconds
     Recv(u64),
 }
@@ -94,6 +95,7 @@ pub async fn client(id: &'static str, port: u16, steps: Vec<Step>) -> Result<(),
     let sock = SocketAddr::from((IpAddr::from([127, 0, 0, 1]), port));
     let stream = TcpStream::connect(sock).await?;
     let mut frame = Framed::new(stream, MqttCodec {});
+    let mut pid = Pid::default();
 
     // Send MQTT CONNECT
     debug!("{id} Handshake");
@@ -117,38 +119,59 @@ pub async fn client(id: &'static str, port: u16, steps: Vec<Step>) -> Result<(),
             Step::Sleep(ms) => {
                 sleep(Duration::from_millis(*ms)).await;
             },
-            Step::Pub => {
+            Step::Pub(qos) => {
                 // Publish something
-                debug!("{id} Publish");
+                let qospid = match qos {
+                    QoS::AtMostOnce => QosPid::AtMostOnce,
+                    QoS::AtLeastOnce => {
+                        pid = pid + 1;
+                        QosPid::AtLeastOnce(pid)
+                    },
+                    QoS::ExactlyOnce => {
+                        pid = pid + 1;
+                        QosPid::ExactlyOnce(pid)
+                    },
+                };
+                debug!("{id} Publish {qospid:?}");
                 let pkt = Publish { dup: false,
-                                    qospid: QosPid::AtMostOnce,
+                                    qospid: qospid,
                                     retain: false,
                                     topic_name: String::from("mqttest"),
                                     payload: "hello".into() };
                 frame.send(pkt.into()).await?;
             },
-            Step::Sub => {
+            Step::Sub(qos) => {
                 // Subscribe
-                debug!("{id} Subscribe");
-                let pid = Pid::new();
-                let topics = vec![SubscribeTopic { topic_path: String::from("mqttest"),
-                                                   qos: QoS::AtMostOnce }];
+                debug!("{id} Subscribe {qos:?} {pid:?}");
+                let topics =
+                    vec![SubscribeTopic { topic_path: String::from("mqttest"), qos: *qos }];
                 let pkt = Subscribe { pid, topics };
                 frame.send(pkt.into()).await?;
                 match frame.next().await {
-                    Some(Ok(Packet::Suback(p))) if p.pid == pid => (),
+                    Some(Ok(Packet::Suback(p))) if p.pid == pid => debug!("{id} Got suback"),
                     o => Err(format!("Expected Suback got {:?}", o))?,
                 }
+                pid = pid + 1;
             },
             Step::Recv(wait) => {
+                debug!("{id} Start receiving");
                 // Wait for publish/ping, with a timeout
                 while let Some(p) = timeout(*wait, frame.next()).await {
                     debug!("{id} Received {:?}", p);
                     match p {
                         Some(Ok(Packet::Pingreq)) => frame.send(Packet::Pingresp).await?,
-                        Some(Ok(Packet::Publish(_))) => (),
+                        Some(Ok(Packet::Publish(Publish { qospid, .. }))) => match qospid {
+                            QosPid::AtLeastOnce(pid) | QosPid::ExactlyOnce(pid) => {
+                                frame.send(Packet::Puback(pid)).await?;
+                            },
+                            QosPid::AtMostOnce => (),
+                        },
+                        Some(Ok(Packet::Puback(_))) => (),
                         None => break,
-                        o => Err(format!("Unexpected {:?}", o))?,
+                        o => {
+                            error!("Unexpected {:?}", o);
+                            Err(format!("Unexpected {:?}", o))?
+                        },
                     }
                 }
             },
