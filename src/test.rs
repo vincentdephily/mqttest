@@ -66,7 +66,7 @@ fn stop_on_drop() {
 fn cmd_disconnect() {
     block_on(async {
         // Start the server
-        let conf = Conf::new().max_connect(1).event_on(EventKind::Discon);
+        let conf = Conf::new().max_connect(1).events([EventKind::Discon]);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start long-running client as a separate task, look for start event
@@ -100,7 +100,7 @@ fn cmd_stopserver() {
 fn cmd_send_ping() {
     block_on(async {
         // Start the server
-        let conf = Conf::new().max_connect(1).event_on(EventKind::Recv).event_on(EventKind::Send);
+        let conf = Conf::new().max_connect(1).events([EventKind::Recv, EventKind::Send]);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start client and wait for handshake
@@ -125,7 +125,7 @@ fn cmd_send_ping() {
 fn pubsub(pubqos: QoS, subqos: QoS) {
     block_on(async move {
         // Start the server
-        let conf = Conf::new().max_connect(2).event_on(EventKind::Recv).event_on(EventKind::Send);
+        let conf = Conf::new().max_connect(2).events([EventKind::Recv, EventKind::Send]);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Start subscriber client
@@ -184,7 +184,7 @@ fn pub0sub1() {
 fn events_full() {
     block_on(async {
         // Start a server with a small result buffer
-        let conf = Conf::new().max_connect(1).event_on(EventKind::Send).result_buffer(10);
+        let conf = Conf::new().max_connect(1).events([EventKind::Send]).result_buffer(10);
         let mut srv = Mqttest::start(conf).await.expect("Failed listen");
 
         // Fill the event channel

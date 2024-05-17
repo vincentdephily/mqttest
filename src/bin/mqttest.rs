@@ -154,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           .max_pkt_delay(opt.max_pkt_delay.0)
                           .max_time(opt.max_time.into_iter().map(|d| d.0).collect())
                           .sess_expire(opt.sess_expire.into_iter().map(|d| d.0).collect())
-                          .event_reset(false);
+                          .events([]);
     let server = Mqttest::start(conf).await?;
     info!("Done {:?}", server.finish().await);
     Ok(())

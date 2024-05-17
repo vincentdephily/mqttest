@@ -3,7 +3,7 @@
 
 use crate::{client::SessionData, mqtt::*};
 use log::*;
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashSet, time::Instant};
 use tokio::{net::TcpStream,
             sync::{mpsc::{error::TrySendError, Sender},
                    oneshot}};
@@ -113,7 +113,7 @@ impl PartialEq<Event> for Event {
 ///
 /// [`Event`]: enum.Event.html
 // TODO: Split Recv and Sent into per-packet types
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum EventKind {
     Conn,
     Discon,
@@ -130,16 +130,15 @@ pub enum EventKind {
 #[derive(Clone)]
 pub(crate) struct SendEvent {
     chan: Option<Sender<Event>>,
-    filt: HashMap<EventKind, bool>,
-    def: bool,
+    filt: HashSet<EventKind>,
 }
 impl SendEvent {
-    pub(crate) fn new(chan: Sender<Event>, filt: HashMap<EventKind, bool>, def: bool) -> Self {
-        SendEvent { chan: Some(chan), filt, def }
+    pub(crate) fn new(chan: Sender<Event>, filt: &HashSet<EventKind>) -> Self {
+        SendEvent { chan: Some(chan), filt: filt.clone() }
     }
     pub(crate) fn send(&mut self, event: Event) {
         if let Some(ref mut s) = self.chan {
-            if *self.filt.get(&event.kind()).unwrap_or(&self.def) {
+            if self.filt.contains(&event.kind()) {
                 match s.try_send(event.now()) {
                     Err(TrySendError::Closed(_)) => {
                         debug!("No receiver for Event messages");
